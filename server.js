@@ -3,11 +3,21 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 const Groq = require('groq-sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const multer = require('multer');
 const database = require('./database');
+const valkey = require('./valkey');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+
+// Multer setup for memory storage
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
 // Middleware
 app.use(cors());
@@ -48,14 +58,103 @@ Do not invent transactions or amounts that are not present in the data.`;
 }
 
 // ============================================
+// Cache Status API - Monitoring
+// ============================================
+
+app.get('/api/cache/status', async (req, res) => {
+    try {
+        const connected = valkey.isValkeyConnected();
+        let keyCount = 0;
+        let memoryUsed = 'unknown';
+
+        if (connected) {
+            keyCount = await valkey.getKeyCount();
+            memoryUsed = await valkey.getMemoryInfo();
+        }
+
+        res.json({ connected, keyCount, memoryUsed });
+    } catch (error) {
+        console.error('Cache status error:', error);
+        res.json({ connected: false, keyCount: 0, memoryUsed: 'error' });
+    }
+});
+
+// ============================================
+// Cache Flush API - Administration
+// ============================================
+
+app.post('/api/cache/flush', async (req, res) => {
+    try {
+        const isDev = process.env.NODE_ENV !== 'production';
+        const secret = req.headers['x-cache-flush-secret'];
+
+        if (!isDev && secret !== process.env.CACHE_FLUSH_SECRET) {
+            return res.status(403).json({ success: false, error: 'Forbidden' });
+        }
+
+        const deletedCount = await valkey.deleteCachePattern('sf:*');
+        res.json({ success: true, deletedCount });
+    } catch (error) {
+        console.error('Cache flush error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============================================
 // Categories API - MODULE II: Read operations
 // ============================================
 
-app.get('/api/categories', (req, res) => {
+app.get('/api/categories', async (req, res) => {
     try {
+        const cacheKey = 'sf:categories';
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const categories = database.getAllCategories();
+        await valkey.setCache(cacheKey, categories, 3600);
         apiResponse(res, true, categories);
     } catch (error) {
+        const categories = database.getAllCategories();
+        apiResponse(res, true, categories);
+    }
+});
+
+app.post('/api/suggest-category', async (req, res) => {
+    try {
+        const { description, type } = req.body;
+        if (!description || typeof description !== 'string' || !description.trim()) {
+            return apiResponse(res, false, null, 'description is required');
+        }
+
+        if (!genAI) {
+            return apiResponse(res, false, null, 'GEMINI_API_KEY is not configured.');
+        }
+
+        let categories = database.getAllCategories();
+        if (type) {
+            categories = categories.filter(c => c.type === type);
+        }
+
+        const categoryNames = categories.map(c => c.name).join(', ');
+
+        const prompt = `Given this transaction description: "${description}"
+And these available categories: ${categoryNames}
+Return ONLY the most likely category name. No explanation.`;
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const result = await model.generateContent(prompt);
+        const suggestedName = result.response.text().trim();
+
+        const suggestedCategory = categories.find(c => c.name.toLowerCase() === suggestedName.toLowerCase());
+
+        apiResponse(res, true, {
+            category_id: suggestedCategory ? suggestedCategory.id : null,
+            category_name: suggestedName
+        });
+    } catch (error) {
+        console.error('Category suggestion error:', error);
         apiResponse(res, false, null, error.message);
     }
 });
@@ -64,22 +163,37 @@ app.get('/api/categories', (req, res) => {
 // Transactions API - MODULE IV, V: Query Operations
 // ============================================
 
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', async (req, res) => {
     try {
         const { month, category_id, page, limit } = req.query;
+        const cacheKey = `sf:transactions:${month || 'all'}:${page || 1}:${category_id || 'all'}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const result = database.getTransactions({
             month,
             category_id: category_id ? parseInt(category_id) : undefined,
             page: parseInt(page) || 1,
             limit: parseInt(limit) || 10
         });
+
+        await valkey.setCache(cacheKey, result, 120);
         apiResponse(res, true, result);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        const result = database.getTransactions({
+            month: req.query.month,
+            category_id: req.query.category_id ? parseInt(req.query.category_id) : undefined,
+            page: parseInt(req.query.page) || 1,
+            limit: parseInt(req.query.limit) || 10
+        });
+        apiResponse(res, true, result);
     }
 });
 
-app.post('/api/transactions', (req, res) => {
+app.post('/api/transactions', async (req, res) => {
     try {
         const { category_id, amount, description, date } = req.body;
 
@@ -98,13 +212,24 @@ app.post('/api/transactions', (req, res) => {
             description: description || '',
             date
         });
+
+        // Invalidate related caches
+        await valkey.flushTag('transactions');
+        await valkey.flushTag('summary');
+        await valkey.flushTag('recent');
+        await valkey.flushTag('breakdown');
+        await valkey.flushTag('expense-cat');
+        await valkey.flushTag('trend');
+        await valkey.flushTag('budget-health');
+        await valkey.flushTag('ai');
+
         apiResponse(res, true, transaction);
     } catch (error) {
         apiResponse(res, false, null, error.message);
     }
 });
 
-app.put('/api/transactions/:id', (req, res) => {
+app.put('/api/transactions/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { category_id, amount, description, date } = req.body;
@@ -121,6 +246,16 @@ app.put('/api/transactions/:id', (req, res) => {
         });
 
         if (updated) {
+            // Invalidate related caches
+            await valkey.flushTag('transactions');
+            await valkey.flushTag('summary');
+            await valkey.flushTag('recent');
+            await valkey.flushTag('breakdown');
+            await valkey.flushTag('expense-cat');
+            await valkey.flushTag('trend');
+            await valkey.flushTag('budget-health');
+            await valkey.flushTag('ai');
+
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Transaction not found');
@@ -130,12 +265,22 @@ app.put('/api/transactions/:id', (req, res) => {
     }
 });
 
-app.delete('/api/transactions/:id', (req, res) => {
+app.delete('/api/transactions/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const deleted = database.deleteTransaction(parseInt(id));
 
         if (deleted) {
+            // Invalidate related caches
+            await valkey.flushTag('transactions');
+            await valkey.flushTag('summary');
+            await valkey.flushTag('recent');
+            await valkey.flushTag('breakdown');
+            await valkey.flushTag('expense-cat');
+            await valkey.flushTag('trend');
+            await valkey.flushTag('budget-health');
+            await valkey.flushTag('ai');
+
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Transaction not found');
@@ -149,26 +294,48 @@ app.delete('/api/transactions/:id', (req, res) => {
 // Summary API - MODULE V: Aggregation View
 // ============================================
 
-app.get('/api/summary', (req, res) => {
+app.get('/api/summary', async (req, res) => {
     try {
         const { month } = req.query;
         if (!month) {
             return apiResponse(res, false, null, 'month parameter is required (YYYY-MM)');
         }
+
+        const cacheKey = `sf:summary:${month}`;
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
+        const summary = database.getMonthlySummary(month);
+        const result = summary || { month, total_income: 0, total_expense: 0, savings: 0 };
+
+        await valkey.setCache(cacheKey, result, 300);
+        apiResponse(res, true, result);
+    } catch (error) {
+        const { month } = req.query;
         const summary = database.getMonthlySummary(month);
         apiResponse(res, true, summary || { month, total_income: 0, total_expense: 0, savings: 0 });
-    } catch (error) {
-        apiResponse(res, false, null, error.message);
     }
 });
 
-app.get('/api/recent-transactions', (req, res) => {
+app.get('/api/recent-transactions', async (req, res) => {
     try {
+        const limit = parseInt(req.query.limit) || 5;
+        const cacheKey = `sf:recent:${limit}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
+        const transactions = database.getRecentTransactions(limit);
+        await valkey.setCache(cacheKey, transactions, 60);
+        apiResponse(res, true, transactions);
+    } catch (error) {
         const limit = parseInt(req.query.limit) || 5;
         const transactions = database.getRecentTransactions(limit);
         apiResponse(res, true, transactions);
-    } catch (error) {
-        apiResponse(res, false, null, error.message);
     }
 });
 
@@ -176,17 +343,26 @@ app.get('/api/recent-transactions', (req, res) => {
 // Budgets API - MODULE II: CRUD Operations
 // ============================================
 
-app.get('/api/budgets', (req, res) => {
+app.get('/api/budgets', async (req, res) => {
     try {
         const { month } = req.query;
+        const cacheKey = `sf:budgets:${month || 'all'}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const budgets = database.getBudgets(month);
+        await valkey.setCache(cacheKey, budgets, 300);
         apiResponse(res, true, budgets);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        const budgets = database.getBudgets(req.query.month);
+        apiResponse(res, true, budgets);
     }
 });
 
-app.post('/api/budgets', (req, res) => {
+app.post('/api/budgets', async (req, res) => {
     try {
         const { category_id, amount, month } = req.body;
 
@@ -200,18 +376,27 @@ app.post('/api/budgets', (req, res) => {
             amount,
             month
         });
+
+        // Invalidate related caches
+        await valkey.flushTag('budgets');
+        await valkey.flushTag('budget-health');
+
         apiResponse(res, true, budget);
     } catch (error) {
         apiResponse(res, false, null, error.message);
     }
 });
 
-app.delete('/api/budgets/:id', (req, res) => {
+app.delete('/api/budgets/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const deleted = database.deleteBudget(parseInt(id));
 
         if (deleted) {
+            // Invalidate related caches
+            await valkey.flushTag('budgets');
+            await valkey.flushTag('budget-health');
+
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Budget not found');
@@ -225,13 +410,22 @@ app.delete('/api/budgets/:id', (req, res) => {
 // Budget Health API - MODULE V: View Query
 // ============================================
 
-app.get('/api/budget-health', (req, res) => {
+app.get('/api/budget-health', async (req, res) => {
     try {
         const { month } = req.query;
+        const cacheKey = `sf:budget-health:${month || 'current'}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const health = database.getBudgetHealth(month);
+        await valkey.setCache(cacheKey, health, 180);
         apiResponse(res, true, health);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        const health = database.getBudgetHealth(req.query.month);
+        apiResponse(res, true, health);
     }
 });
 
@@ -239,39 +433,183 @@ app.get('/api/budget-health', (req, res) => {
 // Analytics API - MODULE V, VI: Advanced Queries
 // ============================================
 
-app.get('/api/trend', (req, res) => {
+app.get('/api/trend', async (req, res) => {
     try {
         const { months } = req.query;
+        const cacheKey = `sf:trend:${months || 6}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached.reverse());
+        }
+
         const trend = database.getTrendData(parseInt(months) || 6);
-        // Reverse to get chronological order
-        apiResponse(res, true, trend.reverse());
+        const result = trend.reverse();
+
+        await valkey.setCache(cacheKey, result, 600);
+        apiResponse(res, true, result);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        const trend = database.getTrendData(parseInt(req.query.months) || 6);
+        apiResponse(res, true, trend.reverse());
     }
 });
 
-app.get('/api/category-breakdown', (req, res) => {
+app.get('/api/category-breakdown', async (req, res) => {
     try {
         const { month } = req.query;
         if (!month) {
             return apiResponse(res, false, null, 'month parameter is required (YYYY-MM)');
         }
+
+        const cacheKey = `sf:breakdown:${month}`;
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const breakdown = database.getCategoryBreakdown(month);
+        await valkey.setCache(cacheKey, breakdown, 300);
         apiResponse(res, true, breakdown);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        const breakdown = database.getCategoryBreakdown(req.query.month);
+        apiResponse(res, true, breakdown);
     }
 });
 
-app.get('/api/expense-by-category', (req, res) => {
+app.get('/api/expense-by-category', async (req, res) => {
     try {
         const { month } = req.query;
         if (!month) {
             return apiResponse(res, false, null, 'month parameter is required (YYYY-MM)');
         }
+
+        const cacheKey = `sf:expense-cat:${month}`;
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
         const expenses = database.getExpenseByCategory(month);
+        await valkey.setCache(cacheKey, expenses, 300);
         apiResponse(res, true, expenses);
     } catch (error) {
+        const expenses = database.getExpenseByCategory(req.query.month);
+        apiResponse(res, true, expenses);
+    }
+});
+
+// ============================================
+// AI Roast API - MODULE V: Aggregation View
+// ============================================
+
+app.get('/api/roast', async (req, res) => {
+    try {
+        const { month } = req.query;
+        if (!month) {
+            return apiResponse(res, false, null, 'month parameter is required (YYYY-MM)');
+        }
+
+        const cacheKey = `sf:ai:roast:${month}`;
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
+        if (!groq) {
+            return apiResponse(res, false, null, 'GROQ_API_KEY is not configured.');
+        }
+
+        const breakdown = database.getCategoryBreakdown(month);
+        const health = database.getBudgetHealth(month);
+
+        const prompt = `You are a brutally honest but funny financial advisor.
+Roast this Indian college student's spending for ${month}:
+${JSON.stringify(breakdown)}
+Budget status: ${JSON.stringify(health)}
+Write 3–4 punchy sentences. Use ₹. Be specific, funny, and actionable. Keep it concise.`;
+
+        const completion = await groq.chat.completions.create({
+            model: 'llama-3.1-8b-instant',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.8,
+            max_tokens: 500
+        });
+
+        const roast = completion.choices[0].message.content.trim();
+        const result = { roast, month };
+
+        await valkey.setCache(cacheKey, result, 86400);
+        apiResponse(res, true, result);
+    } catch (error) {
+        console.error('Roast error:', error);
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+// ============================================
+// AI Predictive Alerts API
+// ============================================
+
+app.get('/api/predict-alerts', async (req, res) => {
+    console.log('GET /api/predict-alerts hit');
+    try {
+        const month = getCurrentMonth();
+        const cacheKey = `sf:ai:predict:${month}`;
+
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
+        if (!groq) {
+            return apiResponse(res, false, null, 'GROQ_API_KEY is not configured.');
+        }
+
+        const health = database.getBudgetHealth(month);
+        const history = database.getCategoryHistory(3);
+        const dayOfMonth = database.getCurrentMonthDay();
+        const totalDays = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+
+        if (health.length === 0) {
+            return apiResponse(res, true, []);
+        }
+
+        const prompt = `You are a financial predictor. Given 3 months of spending history and current month's partial data, predict which categories will exceed budget.
+
+Current Date: Day ${dayOfMonth} of ${totalDays}
+Budgets & Current Spend: ${JSON.stringify(health)}
+Historical Spend (last 3 months): ${JSON.stringify(history)}
+
+Rules:
+1. Predict the total spend for the end of the month based on current pace (linear extrapolation) and historical patterns.
+2. If predicted spend > budget, it's a "high" or "medium" risk.
+3. Return ONLY a JSON array of objects: [{ "category": "name", "predicted_total": 123, "budget": 100, "risk": "high"|"medium", "reason": "short explanation" }]
+4. If no risks, return an empty array [].
+5. Use ₹ for currency in "reason" but numbers for predicted_total and budget.
+6. Be concise.`;
+
+        const completion = await groq.chat.completions.create({
+            model: 'llama-3.1-8b-instant',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.1,
+            response_format: { type: "json_object" }
+        });
+
+        let resultText = completion.choices[0].message.content.trim();
+        let prediction = JSON.parse(resultText);
+
+        let alerts = [];
+        if (Array.isArray(prediction)) {
+            alerts = prediction;
+        } else if (prediction && typeof prediction === 'object') {
+            alerts = prediction.alerts || prediction.risks || prediction.data ||
+                     Object.values(prediction).find(val => Array.isArray(val)) || [];
+        }
+
+        await valkey.setCache(cacheKey, alerts, 86400);
+        apiResponse(res, true, alerts);
+    } catch (error) {
+        console.error('Prediction error:', error);
         apiResponse(res, false, null, error.message);
     }
 });
@@ -363,19 +701,91 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ============================================
-// Recurring Transactions API
+// AI Receipt OCR API
 // ============================================
 
-app.get('/api/recurring', (req, res) => {
+app.post('/api/ocr-receipt', upload.single('receipt'), async (req, res) => {
     try {
-        const recurring = database.getRecurringTransactions();
-        apiResponse(res, true, recurring);
+        if (!req.file) {
+            return apiResponse(res, false, null, 'No file uploaded');
+        }
+
+        if (!genAI) {
+            return apiResponse(res, false, null, 'GEMINI_API_KEY is not configured.');
+        }
+
+        const categories = database.getAllCategories();
+        const categoryList = categories.map(c => `${c.name} (${c.type})`).join(', ');
+
+        const model = genAI.getGenerativeModel({
+            model: 'gemini-1.5-flash',
+            generationConfig: { responseMimeType: "application/json" }
+        });
+
+        const prompt = `Extract transaction details from this UPI payment screenshot (like GPay, PhonePe, Paytm).
+        Return a JSON object with:
+        {
+            "amount": number,
+            "merchant_name": "string",
+            "date": "YYYY-MM-DD",
+            "suggested_category_id": number | null
+        }
+
+        Rules:
+        1. "amount": The numeric value of the payment.
+        2. "merchant_name": The name of the person or shop paid.
+        3. "date": The date of transaction in YYYY-MM-DD format. If not found, use today's date: ${new Date().toISOString().split('T')[0]}.
+        4. "suggested_category_id": Match the merchant to the most likely category ID from this list:
+        ${JSON.stringify(categories.map(c => ({ id: c.id, name: c.name, type: c.type })))}
+
+        If the image is not a payment receipt or is unreadable, return {"error": "Could not read receipt"}.`;
+
+        const imagePart = {
+            inlineData: {
+                data: req.file.buffer.toString('base64'),
+                mimeType: req.file.mimetype
+            }
+        };
+
+        const result = await model.generateContent([prompt, imagePart]);
+        const response = await result.response;
+        const text = response.text().trim();
+
+        const extractedData = JSON.parse(text);
+
+        if (extractedData.error) {
+            return apiResponse(res, false, null, extractedData.error);
+        }
+
+        apiResponse(res, true, extractedData);
     } catch (error) {
-        apiResponse(res, false, null, error.message);
+        console.error('OCR Error:', error);
+        apiResponse(res, false, null, 'Failed to process receipt. Please ensure it is a clear screenshot of a UPI payment.');
     }
 });
 
-app.post('/api/recurring', (req, res) => {
+// ============================================
+// Recurring Transactions API
+// ============================================
+
+app.get('/api/recurring', async (req, res) => {
+    try {
+        const cacheKey = 'sf:recurring';
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) {
+            return apiResponse(res, true, cached);
+        }
+
+        const recurring = database.getRecurringTransactions();
+        await valkey.setCache(cacheKey, recurring, 300);
+        apiResponse(res, true, recurring);
+    } catch (error) {
+        const recurring = database.getRecurringTransactions();
+        apiResponse(res, true, recurring);
+    }
+});
+
+app.post('/api/recurring', async (req, res) => {
     try {
         const { category_id, amount, description, frequency, next_due_date } = req.body;
 
@@ -391,18 +801,25 @@ app.post('/api/recurring', (req, res) => {
             frequency,
             next_due_date
         });
+
+        // Invalidate related caches
+        await valkey.flushTag('recurring');
+
         apiResponse(res, true, recurring);
     } catch (error) {
         apiResponse(res, false, null, error.message);
     }
 });
 
-app.delete('/api/recurring/:id', (req, res) => {
+app.delete('/api/recurring/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const deleted = database.deleteRecurringTransaction(parseInt(id));
 
         if (deleted) {
+            // Invalidate related caches
+            await valkey.flushTag('recurring');
+
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Recurring transaction not found');
@@ -412,9 +829,21 @@ app.delete('/api/recurring/:id', (req, res) => {
     }
 });
 
-// Serve index.html for all other routes (SPA)
-app.get('*', (req, res) => {
+// Serve index.html for all other routes (SPA), but exclude API routes
+app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    if (req.path.startsWith('/api')) {
+        return res.status(err.status || 500).json({
+            success: false,
+            error: err.message || 'Internal server error'
+        });
+    }
+    next(err);
 });
 
 // Start server

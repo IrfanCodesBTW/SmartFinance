@@ -66,13 +66,25 @@
 
         <main class="main-stage" id="appMain">
             <section class="tab-panel active" id="dashboard-panel" aria-labelledby="dashboardHeading">
-                <div class="section-heading">
+                <div class="section-heading" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
                     <div>
                         <p class="eyebrow">Monthly command centre</p>
                         <h1 id="dashboardHeading">Financial health at a glance</h1>
+                        <p class="section-copy" style="margin-top: 0.5rem;">Income, expenses, savings, and category pressure for the selected month.</p>
                     </div>
-                    <p class="section-copy">Income, expenses, savings, and category pressure for the selected month.</p>
+                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                        <button class="secondary-button" type="button" id="refreshAlertsBtn" style="padding: 0.5rem 0.75rem; font-size: 0.75rem;">
+                            <span aria-hidden="true">↻</span>
+                            <span>Refresh Alerts</span>
+                        </button>
+                        <button class="primary-action shimmer-action" type="button" id="roastMeBtn" style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); border-color: #ef4444;">
+                            <span aria-hidden="true">🔥</span>
+                            <span>Roast Me</span>
+                        </button>
+                    </div>
                 </div>
+
+                <div id="predictiveAlerts" class="alert-container"></div>
 
                 <div class="summary-grid">
                     <article class="metric-card metric-card--income" data-animate>
@@ -255,9 +267,22 @@
                     <p class="eyebrow">Transaction</p>
                     <h2 id="modalTitle">Add Transaction</h2>
                 </div>
-                <button class="icon-button" type="button" id="closeModal"
-                    aria-label="Close transaction modal">×</button>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button class="secondary-button" type="button" id="scanReceiptBtn" style="padding: 0.4rem 0.6rem; font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem;">
+                        <span aria-hidden="true" style="font-size: 1rem;">📷</span>
+                        <span>Scan Receipt</span>
+                    </button>
+                    <button class="icon-button" type="button" id="closeModal"
+                        aria-label="Close transaction modal">×</button>
+                </div>
             </div>
+            <div id="receiptPreviewContainer" class="hidden" style="padding: 0 1.5rem 1rem; position: relative; text-align: center;">
+                <div style="position: relative; display: inline-block; width: 100%; max-width: 300px;">
+                    <img id="receiptPreview" src="" alt="Receipt Preview" style="width: 100%; max-height: 150px; object-fit: contain; border-radius: 8px; border: 1px solid var(--color-border);">
+                    <button type="button" id="removeReceiptBtn" style="position: absolute; top: -8px; right: -8px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">×</button>
+                </div>
+            </div>
+            <input type="file" id="receiptInput" accept="image/*" class="hidden">
             <form id="transactionForm" class="form-grid">
                 <input type="hidden" id="transactionId">
                 <div class="field">
@@ -334,6 +359,26 @@
                     <button type="submit" class="primary-action">Save Budget</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="roastModal" role="dialog" aria-modal="true"
+        aria-labelledby="roastModalTitle">
+        <div class="modal-card" style="border-top: 4px solid #ef4444;">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow" style="color: #ef4444;">AI Roast</p>
+                    <h2 id="roastModalTitle">🔥 Your Monthly Roast</h2>
+                </div>
+                <button class="icon-button" type="button" id="closeRoastModal"
+                    aria-label="Close roast modal">×</button>
+            </div>
+            <div class="roast-content" style="padding: 1.5rem 0; font-size: 1.05rem; line-height: 1.6;">
+                <p id="roastText">Loading your financial reality check...</p>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="primary-action" id="closeRoastBtn" style="width: 100%; background: #ef4444; border-color: #ef4444;">I'll do better</button>
+            </div>
         </div>
     </div>
 

@@ -8,7 +8,8 @@ const state = {
     categories: [],
     transactionType: 'expense',
     editingTransactionId: null,
-    selectedCategoryFilter: null
+    selectedCategoryFilter: null,
+    predictions: []
 };
 
 let budgetMonth = getCurrentMonth();
@@ -123,6 +124,14 @@ async function apiCall(endpoint, options = {}) {
             },
             ...options
         });
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Non-JSON response received:', text.substring(0, 200));
+            throw new Error(`Expected JSON but got ${contentType || 'unknown'}`);
+        }
+
         const result = await response.json();
         if (!result.success) throw new Error(result.error);
         return result.data;
@@ -146,6 +155,25 @@ async function fetchBudgets(month) { return await apiCall(`/budgets?month=${mont
 async function fetchBudgetHealth(month) { return await apiCall(`/budget-health?month=${month}`); }
 async function fetchTrendData(months = 6) { return await apiCall(`/trend?months=${months}`); }
 async function fetchCategoryBreakdown(month) { return await apiCall(`/category-breakdown?month=${month}`); }
+async function fetchPredictiveAlerts(force = false) {
+    const cacheKey = `sf-predictions-${getCurrentMonth()}`;
+    const cached = localStorage.getItem(cacheKey);
+    const today = new Date().toDateString();
+    
+    if (cached && !force) {
+        const { date, data } = JSON.parse(cached);
+        if (date === today) return data;
+    }
+
+    try {
+        const data = await apiCall('/predict-alerts');
+        localStorage.setItem(cacheKey, JSON.stringify({ date: today, data }));
+        return data;
+    } catch (e) {
+        console.error('Failed to fetch predictions:', e);
+        return [];
+    }
+}
 async function fetchRecurring() { return await apiCall('/recurring'); }
 async function createRecurring(data) { return await apiCall('/recurring', { method: 'POST', body: JSON.stringify(data) }); }
 async function deleteRecurring(id) { return await apiCall(`/recurring/${id}`, { method: 'DELETE' }); }
@@ -297,12 +325,57 @@ async function loadDashboard() {
         document.getElementById('netSavings').classList.toggle('amount--savings', savings >= 0);
         document.getElementById('savingsRate').textContent = `Savings rate ${savingsRate}%`;
 
+        loadPredictiveAlerts();
         renderRecentTransactions(recentTx);
         window.updateDashboardCharts?.(expenseData);
         animateDashboardLoad();
     } catch (error) {
         console.error('Dashboard load error:', error);
     }
+}
+
+async function loadPredictiveAlerts(force = false) {
+    const container = document.getElementById('predictiveAlerts');
+    if (!container) return;
+
+    try {
+        if (force) {
+            container.style.opacity = '0.5';
+            container.style.pointerEvents = 'none';
+        }
+        const alerts = await fetchPredictiveAlerts(force);
+        state.predictions = alerts;
+        renderPredictiveAlerts(alerts);
+        if (force) {
+            container.style.opacity = '1';
+            container.style.pointerEvents = 'auto';
+            showToast('Alerts refreshed with latest data');
+            // Re-render budgets to update trend icons
+            if (state.currentTab === 'budgets') loadBudgets();
+        }
+    } catch (e) {
+        container.innerHTML = '';
+    }
+}
+
+function renderPredictiveAlerts(alerts) {
+    const container = document.getElementById('predictiveAlerts');
+    if (!container || !alerts || alerts.length === 0) {
+        if (container) container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = alerts.map(alert => `
+        <div class="alert-banner alert-banner--${alert.risk}" data-animate>
+            <span class="alert-icon">${alert.risk === 'high' ? '⚠️' : 'ℹ️'}</span>
+            <div class="alert-content">
+                <strong>Budget Risk: ${escapeHtml(alert.category)}</strong>
+                <p>${escapeHtml(alert.reason)} Predicted: ${formatCurrency(alert.predicted_total)}</p>
+            </div>
+        </div>
+    `).join('');
+    
+    withGsap(gsap => gsap.fromTo('#predictiveAlerts .alert-banner', { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.4, stagger: 0.1, ease: 'power2.out' }));
 }
 
 function renderRecentTransactions(transactions) {
@@ -457,12 +530,23 @@ function renderBudgetCards(budgets) {
         const color = percentage >= 100 ? 'var(--color-expense)' : percentage >= 80 ? 'var(--color-warning)' : percentage >= 50 ? '#F97316' : 'var(--color-income)';
         const overspent = spent > cap ? `<p class="overspent">Overspent by ${formatCurrency(spent - cap)}</p>` : '';
 
+        // Add trend indicator if prediction exists
+        const prediction = state.predictions.find(p => p.category === budget.category_name);
+        let trendHtml = '';
+        if (prediction) {
+            const isUp = prediction.predicted_total > cap;
+            trendHtml = `<span class="trend-indicator ${isUp ? 'up' : 'stable'}" title="Predicted total: ${formatCurrency(prediction.predicted_total)}">${isUp ? '↑' : '→'}</span>`;
+        }
+
         return `
             <article class="panel budget-card" data-animate>
                 <div class="budget-top">
                     <div class="category-avatar" style="background:${budget.category_color || '#7C3AED'}22;">${budget.category_icon || '₹'}</div>
-                    <div>
-                        <h2>${escapeHtml(budget.category_name || 'Budget')}</h2>
+                    <div style="flex:1">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h2>${escapeHtml(budget.category_name || 'Budget')}</h2>
+                            ${trendHtml}
+                        </div>
                         <span class="status-badge ${statusClass}">${status}</span>
                     </div>
                 </div>
@@ -577,6 +661,108 @@ function resetTransactionForm() {
     updateTypeButtons();
     populateCategorySelect('category');
     updateDescriptionCount();
+    const aiIcon = document.getElementById('ai-suggestion-icon');
+    if (aiIcon) aiIcon.remove();
+    document.getElementById('receiptPreviewContainer')?.classList.add('hidden');
+    const receiptInput = document.getElementById('receiptInput');
+    if (receiptInput) receiptInput.value = '';
+}
+
+async function uploadReceipt(file) {
+    const scanBtn = document.getElementById('scanReceiptBtn');
+    const originalContent = scanBtn.innerHTML;
+    
+    try {
+        scanBtn.disabled = true;
+        scanBtn.innerHTML = '<span>⌛</span><span>Processing...</span>';
+        
+        const formData = new FormData();
+        formData.append('receipt', file);
+        
+        const response = await fetch('/api/ocr-receipt', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const text = await response.text();
+            let errorMsg = 'Server error during scan';
+            try {
+                const errorData = JSON.parse(text);
+                errorMsg = errorData.error || errorMsg;
+            } catch (e) {
+                // If text is HTML, we have our error message from the text fallback
+                if (text.includes('<!DOCTYPE html>') || text.includes('<html>')) {
+                    errorMsg = 'Server returned an HTML error page. Check backend logs.';
+                }
+            }
+            throw new Error(errorMsg);
+        }
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('OCR Non-JSON response:', text.substring(0, 500));
+            throw new Error('Received non-JSON response from server. Possible server crash or misconfiguration.');
+        }
+
+        const result = await response.json();
+        
+        const data = result.data;
+        
+        // Populate fields
+        if (data.amount) document.getElementById('amount').value = data.amount;
+        if (data.merchant_name) document.getElementById('description').value = data.merchant_name;
+        if (data.date) document.getElementById('date').value = data.date;
+        
+        if (data.suggested_category_id) {
+            const category = state.categories.find(c => c.id == data.suggested_category_id);
+            if (category) {
+                state.transactionType = category.type;
+                updateTypeButtons();
+                populateCategorySelect('category');
+            }
+            
+            const categorySelect = document.getElementById('category');
+            if (categorySelect) {
+                categorySelect.value = data.suggested_category_id;
+                
+                // Show AI icon
+                let aiIcon = document.getElementById('ai-suggestion-icon');
+                if (!aiIcon) {
+                    aiIcon = document.createElement('span');
+                    aiIcon.id = 'ai-suggestion-icon';
+                    aiIcon.textContent = ' ✨';
+                    aiIcon.style.fontSize = '1.2em';
+                    aiIcon.title = 'AI Suggested Category';
+                    const label = categorySelect.closest('.field').querySelector('label');
+                    if (label) label.appendChild(aiIcon);
+                }
+            }
+        }
+        
+        // Show preview
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const previewImg = document.getElementById('receiptPreview');
+            const previewContainer = document.getElementById('receiptPreviewContainer');
+            if (previewImg && previewContainer) {
+                previewImg.src = e.target.result;
+                previewContainer.classList.remove('hidden');
+            }
+        };
+        reader.readAsDataURL(file);
+        
+        showToast('Receipt scanned successfully!');
+        updateDescriptionCount();
+        
+    } catch (error) {
+        console.error('OCR Upload error:', error);
+        showToast(error.message || 'Failed to scan receipt', 'error');
+    } finally {
+        scanBtn.disabled = false;
+        scanBtn.innerHTML = originalContent;
+    }
 }
 
 function updateTypeButtons() {
@@ -895,6 +1081,38 @@ function scrollChatToBottom() {
     if (messages) messages.scrollTop = messages.scrollHeight;
 }
 
+const roastCache = {};
+
+function openRoastModal() {
+    const modal = document.getElementById('roastModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    withGsap(gsap => gsap.fromTo(modal.querySelector('.modal-card'), { opacity: 0, scale: 0.94, y: 12 }, { opacity: 1, scale: 1, y: 0, duration: 0.22, ease: 'power3.out' }));
+    
+    document.getElementById('roastText').textContent = 'Loading your financial reality check...';
+    fetchRoast();
+}
+
+function closeRoastModal() {
+    const modal = document.getElementById('roastModal');
+    if (!modal || modal.classList.contains('hidden')) return;
+    modal.classList.add('hidden');
+}
+
+async function fetchRoast() {
+    try {
+        if (roastCache[state.currentMonth]) {
+            document.getElementById('roastText').textContent = roastCache[state.currentMonth];
+            return;
+        }
+        const data = await apiCall(`/roast?month=${state.currentMonth}`);
+        roastCache[state.currentMonth] = data.roast;
+        document.getElementById('roastText').textContent = data.roast;
+    } catch (error) {
+        document.getElementById('roastText').textContent = 'Could not generate a roast right now. Maybe you are too broke even for that?';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         initTheme();
@@ -930,11 +1148,63 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('prevBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(-1));
         document.getElementById('nextBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(1));
         document.getElementById('addBudgetBtn')?.addEventListener('click', openBudgetModal);
+        document.getElementById('roastMeBtn')?.addEventListener('click', openRoastModal);
+        document.getElementById('refreshAlertsBtn')?.addEventListener('click', () => loadPredictiveAlerts(true));
+        document.getElementById('closeRoastModal')?.addEventListener('click', closeRoastModal);
+        document.getElementById('closeRoastBtn')?.addEventListener('click', closeRoastModal);
 
         document.getElementById('closeModal')?.addEventListener('click', closeTransactionModal);
         document.getElementById('cancelBtn')?.addEventListener('click', closeTransactionModal);
         document.getElementById('transactionForm')?.addEventListener('submit', handleTransactionSubmit);
-        document.getElementById('description')?.addEventListener('input', updateDescriptionCount);
+        let suggestionTimeout;
+        const descriptionInput = document.getElementById('description');
+        descriptionInput?.addEventListener('input', (e) => {
+            updateDescriptionCount();
+            const description = e.target.value.trim();
+            if (description.length < 3) return;
+
+            clearTimeout(suggestionTimeout);
+            suggestionTimeout = setTimeout(async () => {
+                try {
+                    const response = await fetch('/api/suggest-category', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            description,
+                            type: state.transactionType
+                        })
+                    });
+                    const result = await response.json();
+                    if (result.success && result.data.category_id) {
+                        const categorySelect = document.getElementById('category');
+                        if (categorySelect) {
+                            categorySelect.value = result.data.category_id;
+                            
+                            let aiIcon = document.getElementById('ai-suggestion-icon');
+                            if (!aiIcon) {
+                                aiIcon = document.createElement('span');
+                                aiIcon.id = 'ai-suggestion-icon';
+                                aiIcon.textContent = ' ✨';
+                                aiIcon.style.fontSize = '1.2em';
+                                aiIcon.title = 'AI Suggested Category';
+                                
+                                const label = categorySelect.closest('.field').querySelector('label');
+                                if (label) label.appendChild(aiIcon);
+                            }
+                            
+                            const clearAIIcon = () => {
+                                const icon = document.getElementById('ai-suggestion-icon');
+                                if (icon) icon.remove();
+                                categorySelect.removeEventListener('change', clearAIIcon);
+                            };
+                            categorySelect.addEventListener('change', clearAIIcon);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Suggestion failed', error);
+                }
+            }, 500);
+        });
 
         document.querySelectorAll('.type-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -954,10 +1224,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('budgetModal')?.addEventListener('click', e => {
             if (e.target.id === 'budgetModal') closeBudgetModal();
         });
+        document.getElementById('roastModal')?.addEventListener('click', e => {
+            if (e.target.id === 'roastModal') closeRoastModal();
+        });
+        document.getElementById('scanReceiptBtn')?.addEventListener('click', () => {
+            document.getElementById('receiptInput')?.click();
+        });
+
+        document.getElementById('receiptInput')?.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) uploadReceipt(file);
+        });
+
+        document.getElementById('removeReceiptBtn')?.addEventListener('click', () => {
+            document.getElementById('receiptPreviewContainer')?.classList.add('hidden');
+            const receiptInput = document.getElementById('receiptInput');
+            if (receiptInput) receiptInput.value = '';
+        });
+
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape') {
                 closeTransactionModal();
                 closeBudgetModal();
+                closeRoastModal();
             }
         });
 

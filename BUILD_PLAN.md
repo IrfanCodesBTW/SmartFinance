@@ -110,17 +110,17 @@ On day 15 of the month, the dashboard shows "⚠️ Food is on track to exceed b
 **Goal:** User uploads a GPay/PhonePe screenshot → transaction auto-fills.
 
 ### Checklist
-- [ ] Add `POST /api/ocr-receipt` endpoint in `server.js` (accept `multipart/form-data`)
-- [ ] Use `multer` middleware for file upload handling
-- [ ] Send image to Gemini Vision (`gemini-1.5-flash` with image input):
+- [x] Add `POST /api/ocr-receipt` endpoint in `server.js` (accept `multipart/form-data`)
+- [x] Use `multer` middleware for file upload handling
+- [x] Send image to Gemini Vision (`gemini-1.5-flash` with image input):
     ```text
     Extract transaction details from this UPI payment screenshot.
     Return JSON only: { amount, merchant_name, date, suggested_category }
     ```
-- [ ] On success, auto-populate the Add Transaction form fields
-- [ ] Add an "📷 Scan Receipt" button next to the Add Transaction form
-- [ ] Handle errors gracefully (non-receipt images, blurry screenshots)
-- [ ] Show a preview thumbnail of the uploaded image in the form
+- [x] On success, auto-populate the Add Transaction form fields
+- [x] Add an "📷 Scan Receipt" button next to the Add Transaction form
+- [x] Handle errors gracefully (non-receipt images, blurry screenshots)
+- [x] Show a preview thumbnail of the uploaded image in the form
 
 **Phase 5 Done When:**
 Uploading a GPay screenshot auto-fills ₹349, "Zomato", today's date, and suggests "Food & Dining" — user just clicks Save.

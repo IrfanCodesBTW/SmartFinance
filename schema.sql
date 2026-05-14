@@ -82,7 +82,8 @@ WHERE t.user_id = 1
 GROUP BY strftime('%Y-%m', date);
 
 -- View: Budget Health - demonstrates JOIN, HAVING, and CASE for status
-CREATE VIEW IF NOT EXISTS budget_health AS
+DROP VIEW IF EXISTS budget_health;
+CREATE VIEW budget_health AS
 SELECT
     b.id as budget_id,
     b.category_id,
@@ -105,11 +106,11 @@ LEFT JOIN transactions t ON b.category_id = t.category_id
     AND strftime('%Y-%m', t.date) = b.month
     AND t.user_id = b.user_id
 WHERE b.user_id = 1
-GROUP BY b.id, b.category_id, c.name, c.icon, c.color, b.amount, b.month
-HAVING b.month = strftime('%Y-%m', 'now');
+GROUP BY b.id, b.category_id, c.name, c.icon, c.color, b.amount, b.month;
 
 -- View: Top Categories - demonstrates GROUP BY, ORDER BY, LIMIT
-CREATE VIEW IF NOT EXISTS top_categories AS
+DROP VIEW IF EXISTS top_categories;
+CREATE VIEW top_categories AS
 SELECT
     c.id as category_id,
     c.name as category_name,
@@ -117,15 +118,14 @@ SELECT
     c.color as category_color,
     c.type as category_type,
     SUM(t.amount) as total_amount,
-    COUNT(*) as transaction_count
+    COUNT(*) as transaction_count,
+    strftime('%Y-%m', t.date) as month
 FROM transactions t
 JOIN categories c ON t.category_id = c.id
 WHERE t.user_id = 1
     AND c.type = 'expense'
-    AND strftime('%Y-%m', t.date) = strftime('%Y-%m', 'now')
-GROUP BY c.id, c.name, c.icon, c.color, c.type
-ORDER BY total_amount DESC
-LIMIT 5;
+GROUP BY c.id, c.name, c.icon, c.color, c.type, month
+ORDER BY total_amount DESC;
 
 -- MODULE VII: Normalization (3NF is already achieved with normalized tables)
 -- MODULE VIII: Transaction Management

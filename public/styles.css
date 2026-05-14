@@ -1499,3 +1499,99 @@ html[data-theme="light"] .chat-panel {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================ */
+/* Predictive Alerts & Trend Indicators */
+/* ============================================ */
+
+.alert-container {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 95%, black);
+  box-shadow: var(--shadow-card);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s var(--ease-premium);
+}
+
+.alert-banner:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+}
+
+.alert-banner::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--alert-color, var(--color-accent));
+}
+
+.alert-banner--high {
+  --alert-color: var(--color-expense);
+  border-color: color-mix(in srgb, var(--color-expense) 20%, var(--color-border));
+}
+
+.alert-banner--medium {
+  --alert-color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 20%, var(--color-border));
+}
+
+.alert-icon {
+  font-size: 20px;
+  padding-top: 2px;
+}
+
+.alert-content {
+  flex: 1;
+}
+
+.alert-content strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 4px;
+  color: var(--color-text);
+}
+
+.alert-content p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-muted);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.trend-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 900;
+  transition: all 0.2s ease;
+}
+
+.trend-indicator.up {
+  background: color-mix(in srgb, var(--color-expense) 12%, transparent);
+  color: var(--color-expense);
+}
+
+.trend-indicator.stable {
+  background: color-mix(in srgb, var(--color-income) 12%, transparent);
+  color: var(--color-income);
+}
+

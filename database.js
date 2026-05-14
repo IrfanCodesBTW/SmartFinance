@@ -205,7 +205,7 @@ function getMonthlySummary(month) {
 }
 
 function getBudgetHealth(month) {
-    // MODULE V, VI: Uses VIEW with JOIN, HAVING, and CASE
+    // MODULE V, VI: Uses VIEW but allows filtering by month
     const query = month
         ? 'SELECT * FROM budget_health WHERE month = ?'
         : 'SELECT * FROM budget_health';
@@ -265,8 +265,25 @@ function getTrendData(months = 6) {
 }
 
 function getCategoryBreakdown(month) {
-    // MODULE V: Uses VIEW with GROUP BY, ORDER BY, LIMIT
-    return queryAll('SELECT * FROM top_categories');
+    // MODULE V: Direct aggregation instead of hardcoded view to support month filtering
+    return queryAll(`
+        SELECT
+            c.id as category_id,
+            c.name as category_name,
+            c.icon as category_icon,
+            c.color as category_color,
+            c.type as category_type,
+            SUM(t.amount) as total_amount,
+            COUNT(*) as transaction_count
+        FROM transactions t
+        JOIN categories c ON t.category_id = c.id
+        WHERE t.user_id = 1
+            AND c.type = 'expense'
+            AND strftime('%Y-%m', t.date) = ?
+        GROUP BY c.id, c.name, c.icon, c.color, c.type
+        ORDER BY total_amount DESC
+        LIMIT 5
+    `, [month]);
 }
 
 function getExpenseByCategory(month) {
@@ -282,6 +299,29 @@ function getExpenseByCategory(month) {
         GROUP BY c.id, c.name, c.icon, c.color
         ORDER BY total DESC
     `, [month]);
+}
+
+function getCategoryHistory(months = 3) {
+    // Get historical spend per category for the last N months (excluding current)
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    return queryAll(`
+        SELECT
+            c.id as category_id,
+            c.name as category_name,
+            strftime('%Y-%m', t.date) as month,
+            SUM(t.amount) as total_amount
+        FROM transactions t
+        JOIN categories c ON t.category_id = c.id
+        WHERE t.user_id = 1
+            AND c.type = 'expense'
+            AND strftime('%Y-%m', t.date) < ?
+        GROUP BY c.id, c.name, month
+        ORDER BY month DESC, total_amount DESC
+    `, [currentMonth]); 
+}
+
+function getCurrentMonthDay() {
+    return new Date().getDate();
 }
 
 // ============================================
@@ -338,6 +378,8 @@ module.exports = {
     getTrendData,
     getCategoryBreakdown,
     getExpenseByCategory,
+    getCategoryHistory,
+    getCurrentMonthDay,
     getRecurringTransactions,
     createRecurringTransaction,
     deleteRecurringTransaction
