@@ -1,0 +1,133 @@
+-- SmartFinance Database Schema
+-- Demonstrates all 10 DBMS Modules
+
+-- MODULE I: Entity-Relationship Modeling
+-- Users table - single user entity for this app
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Categories table - lookup table for transaction categories
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    type TEXT CHECK(type IN ('income', 'expense')) NOT NULL,
+    icon TEXT,
+    color TEXT
+);
+
+-- MODULE II: Relational Data Model
+-- Transactions table - main entity with foreign keys
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    description TEXT,
+    date DATE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
+-- Budgets table - tracks monthly budget limits per category
+CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    month TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (category_id) REFERENCES categories(id),
+    UNIQUE(user_id, category_id, month)
+);
+
+-- Recurring transactions for subscriptions and regular income
+CREATE TABLE IF NOT EXISTS recurring_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    description TEXT,
+    frequency TEXT CHECK(frequency IN ('daily', 'weekly', 'monthly')),
+    next_due_date DATE NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
+-- MODULE III: SQL Data Types and Constraints
+-- Indexes for performance optimization
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
+
+-- MODULE IV: Relational Algebra and Set Operations
+-- MODULE V: Aggregation with GROUP BY and HAVING
+-- MODULE VI: Subqueries and Nested Queries
+
+-- View: Monthly Summary - demonstrates GROUP BY, CASE, and aggregation
+CREATE VIEW IF NOT EXISTS monthly_summary AS
+SELECT
+    strftime('%Y-%m', date) as month,
+    SUM(CASE WHEN c.type = 'income' THEN t.amount ELSE 0 END) as total_income,
+    SUM(CASE WHEN c.type = 'expense' THEN t.amount ELSE 0 END) as total_expense,
+    SUM(CASE WHEN c.type = 'income' THEN t.amount ELSE -t.amount END) as savings
+FROM transactions t
+JOIN categories c ON t.category_id = c.id
+WHERE t.user_id = 1
+GROUP BY strftime('%Y-%m', date);
+
+-- View: Budget Health - demonstrates JOIN, HAVING, and CASE for status
+CREATE VIEW IF NOT EXISTS budget_health AS
+SELECT
+    b.id as budget_id,
+    b.category_id,
+    c.name as category_name,
+    c.icon as category_icon,
+    c.color as category_color,
+    b.amount as budget_amount,
+    b.month,
+    COALESCE(SUM(t.amount), 0) as spent_amount,
+    b.amount - COALESCE(SUM(t.amount), 0) as remaining_amount,
+    CASE
+        WHEN COALESCE(SUM(t.amount), 0) >= b.amount THEN 'exceeded'
+        WHEN (b.amount - COALESCE(SUM(t.amount), 0)) / b.amount <= 0.2 THEN 'critical'
+        WHEN (b.amount - COALESCE(SUM(t.amount), 0)) / b.amount <= 0.5 THEN 'warning'
+        ELSE 'healthy'
+    END as status
+FROM budgets b
+JOIN categories c ON b.category_id = c.id
+LEFT JOIN transactions t ON b.category_id = t.category_id
+    AND strftime('%Y-%m', t.date) = b.month
+    AND t.user_id = b.user_id
+WHERE b.user_id = 1
+GROUP BY b.id, b.category_id, c.name, c.icon, c.color, b.amount, b.month
+HAVING b.month = strftime('%Y-%m', 'now');
+
+-- View: Top Categories - demonstrates GROUP BY, ORDER BY, LIMIT
+CREATE VIEW IF NOT EXISTS top_categories AS
+SELECT
+    c.id as category_id,
+    c.name as category_name,
+    c.icon as category_icon,
+    c.color as category_color,
+    c.type as category_type,
+    SUM(t.amount) as total_amount,
+    COUNT(*) as transaction_count
+FROM transactions t
+JOIN categories c ON t.category_id = c.id
+WHERE t.user_id = 1
+    AND c.type = 'expense'
+    AND strftime('%Y-%m', t.date) = strftime('%Y-%m', 'now')
+GROUP BY c.id, c.name, c.icon, c.color, c.type
+ORDER BY total_amount DESC
+LIMIT 5;
+
+-- MODULE VII: Normalization (3NF is already achieved with normalized tables)
+-- MODULE VIII: Transaction Management
+-- MODULE IX: Concurrency Control
+-- MODULE X: Query Optimization (indexes created above)

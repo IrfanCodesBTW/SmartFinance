@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartFinance - Know where every rupee went</title>
+    <meta name="description"
+        content="Track expenses, budgets, and financial trends in Indian Rupees with SmartFinance.">
+    <meta name="theme-color" content="#09090E">
+    <script>
+        (function () {
+            const savedTheme = localStorage.getItem('sf-theme') || 'dark';
+            document.documentElement.dataset.theme = savedTheme;
+            document.querySelector('meta[name="theme-color"]')?.setAttribute('content', savedTheme === 'dark' ? '#09090E' : '#EEF0F5');
+        })();
+    </script>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%237C3AED'/%3E%3Ctext x='50' y='68' font-size='54' text-anchor='middle' fill='white'%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+</head>
+
+<body>
+    <a class="skip-link" href="#appMain">Skip to financial overview</a>
+
+    <div class="app-shell">
+        <header class="app-header" id="appHeader">
+            <div class="brand-lockup" aria-label="SmartFinance">
+                <img src="logo.jpg" alt="SmartFinance Logo" class="brand-logo">
+                <div>
+                    <div class="brand-name"><span>Smart</span>Finance</div>
+                    <p class="brand-tagline">Know where every rupee went</p>
+                </div>
+            </div>
+
+            <nav class="tab-switcher" aria-label="Primary navigation">
+                <button class="nav-tab active" type="button" data-tab="dashboard">Dashboard</button>
+                <button class="nav-tab" type="button" data-tab="transactions">Transactions</button>
+                <button class="nav-tab" type="button" data-tab="budgets">Budgets</button>
+                <button class="nav-tab" type="button" data-tab="analytics">Analytics</button>
+            </nav>
+
+            <div class="header-actions">
+                <button class="user-profile-toggle" type="button" aria-label="User profile">
+                    <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix&backgroundColor=7C3AED"
+                        alt="User Avatar" class="">
+                    <span class="user-name">Alex M.</span>
+                </button>
+                <button class="icon-button theme-toggle" type="button" id="themeToggle"
+                    aria-label="Switch to light theme">
+                    <span class="theme-toggle__icon" aria-hidden="true">☾</span>
+                </button>
+                <button class="primary-action shimmer-action" type="button" id="addTransactionBtn">
+                    <span aria-hidden="true">+</span>
+                    <span>Add Transaction</span>
+                </button>
+            </div>
+        </header>
+
+        <main class="main-stage" id="appMain">
+            <section class="tab-panel active" id="dashboard-panel" aria-labelledby="dashboardHeading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Monthly command centre</p>
+                        <h1 id="dashboardHeading">Financial health at a glance</h1>
+                    </div>
+                    <p class="section-copy">Income, expenses, savings, and category pressure for the selected month.</p>
+                </div>
+
+                <div class="summary-grid">
+                    <article class="metric-card metric-card--income" data-animate>
+                        <div class="metric-card__topline">
+                            <span class="metric-icon" aria-hidden="true">↗</span>
+                            <span>Total Income</span>
+                        </div>
+                        <strong class="amount amount--income" id="totalIncome">₹0</strong>
+                        <span class="metric-card__meta">Money received this month</span>
+                    </article>
+                    <article class="metric-card metric-card--expense" data-animate data-animate-delay="100">
+                        <div class="metric-card__topline">
+                            <span class="metric-icon" aria-hidden="true">↘</span>
+                            <span>Total Expense</span>
+                        </div>
+                        <strong class="amount amount--expense" id="totalExpense">₹0</strong>
+                        <span class="metric-card__meta">Tracked outflow this month</span>
+                    </article>
+                    <article class="metric-card metric-card--savings" data-animate data-animate-delay="200">
+                        <div class="metric-card__topline">
+                            <span class="metric-icon" aria-hidden="true">●</span>
+                            <span>Net Savings</span>
+                        </div>
+                        <strong class="amount amount--savings" id="netSavings">₹0</strong>
+                        <span class="metric-card__meta" id="savingsRate">Savings rate 0%</span>
+                    </article>
+                </div>
+
+                <div class="bento-grid">
+                    <article class="panel panel--wide chart-panel" data-animate>
+                        <div class="panel-header">
+                            <div>
+                                <p class="eyebrow">Spend composition</p>
+                                <h2>Expenses by Category</h2>
+                            </div>
+                        </div>
+                        <div class="chart-shell chart-shell--split">
+                            <div class="chart-frame">
+                                <canvas id="expenseChart" aria-label="Doughnut chart showing expenses by category"
+                                    role="img"></canvas>
+                            </div>
+                            <div class="chart-legend" id="expenseLegend" aria-label="Expense category legend"></div>
+                        </div>
+                    </article>
+
+                    <aside class="panel recent-panel" data-animate data-animate-delay="100">
+                        <div class="panel-header">
+                            <div>
+                                <p class="eyebrow">Latest movement</p>
+                                <h2>Recent Transactions</h2>
+                            </div>
+                        </div>
+                        <div class="transaction-stack" id="recentTransactions"></div>
+                        <button class="text-link view-all-btn" type="button" data-tab="transactions">View all
+                            transactions →</button>
+                    </aside>
+                </div>
+            </section>
+
+            <section class="tab-panel" id="transactions-panel" aria-labelledby="transactionsHeading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Ledger</p>
+                        <h1 id="transactionsHeading">Every rupee, accounted for</h1>
+                    </div>
+                    <div class="month-control" aria-label="Transaction month selector">
+                        <button class="icon-button month-button" type="button" id="prevMonth"
+                            aria-label="Previous month">←</button>
+                        <span id="currentMonth">May 2026</span>
+                        <button class="icon-button month-button" type="button" id="nextMonth"
+                            aria-label="Next month">→</button>
+                    </div>
+                </div>
+
+                <article class="panel ledger-panel">
+                    <div class="filter-row" id="categoryFilters" aria-label="Filter transactions by category"></div>
+                    <div class="list-shell" id="transactionsList"></div>
+                    <div class="pagination-bar">
+                        <button class="secondary-button" type="button" id="prevPage">← Previous</button>
+                        <span id="pageInfo">Page 1 of 1</span>
+                        <button class="secondary-button" type="button" id="nextPage">Next →</button>
+                    </div>
+                </article>
+            </section>
+
+            <section class="tab-panel" id="budgets-panel" aria-labelledby="budgetsHeading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Budget pressure</p>
+                        <h1 id="budgetsHeading">Stay ahead of overspend</h1>
+                    </div>
+                    <div class="month-control" aria-label="Budget month selector">
+                        <button class="icon-button month-button" type="button" id="prevBudgetMonth"
+                            aria-label="Previous budget month">←</button>
+                        <span id="budgetMonth">May 2026</span>
+                        <button class="icon-button month-button" type="button" id="nextBudgetMonth"
+                            aria-label="Next budget month">→</button>
+                    </div>
+                </div>
+
+                <div class="budget-grid" id="budgetCards"></div>
+                <button class="add-budget-card" type="button" id="addBudgetBtn">
+                    <span aria-hidden="true">+</span>
+                    <strong>Add Budget</strong>
+                    <small>Set a monthly guardrail for an expense category</small>
+                </button>
+            </section>
+
+            <section class="tab-panel" id="analytics-panel" aria-labelledby="analyticsHeading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Analytics</p>
+                        <h1 id="analyticsHeading">Patterns behind the payments</h1>
+                    </div>
+                    <p class="section-copy">Six-month income, expense, and category intelligence.</p>
+                </div>
+
+                <div class="analytics-grid">
+                    <article class="panel panel--full chart-panel" data-animate>
+                        <div class="panel-header">
+                            <div>
+                                <p class="eyebrow">Six-month trend</p>
+                                <h2>Income vs Expense</h2>
+                            </div>
+                        </div>
+                        <div class="chart-frame chart-frame--trend">
+                            <canvas id="trendChart"
+                                aria-label="Line chart comparing income and expense for the last six months"
+                                role="img"></canvas>
+                        </div>
+                    </article>
+                    <article class="panel chart-panel" data-animate>
+                        <div class="panel-header">
+                            <div>
+                                <p class="eyebrow">Category mix</p>
+                                <h2>Breakdown</h2>
+                            </div>
+                        </div>
+                        <div class="chart-frame">
+                            <canvas id="analyticsChart" aria-label="Doughnut chart showing spending category breakdown"
+                                role="img"></canvas>
+                        </div>
+                        <div class="chart-legend chart-legend--compact" id="analyticsLegend"></div>
+                    </article>
+                    <article class="panel top-panel" data-animate data-animate-delay="100">
+                        <div class="panel-header">
+                            <div>
+                                <p class="eyebrow">Largest outflows</p>
+                                <h2>Top Spending Categories</h2>
+                            </div>
+                        </div>
+                        <div class="insight-chip" id="insightChip">Waiting for this month’s signal</div>
+                        <div class="top-category-list" id="topCategories"></div>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Mobile navigation">
+        <button class="mobile-nav-tab active" type="button" data-tab="dashboard" aria-label="Dashboard">
+            <span aria-hidden="true">⌁</span><small>Dash</small>
+        </button>
+        <button class="mobile-nav-tab" type="button" data-tab="transactions" aria-label="Transactions">
+            <span aria-hidden="true">≡</span><small>Ledger</small>
+        </button>
+        <button class="mobile-nav-tab" type="button" data-tab="budgets" aria-label="Budgets">
+            <span aria-hidden="true">◴</span><small>Budget</small>
+        </button>
+        <button class="mobile-nav-tab" type="button" data-tab="analytics" aria-label="Analytics">
+            <span aria-hidden="true">⌬</span><small>Stats</small>
+        </button>
+    </nav>
+
+    <div class="modal-overlay hidden" id="transactionModal" role="dialog" aria-modal="true"
+        aria-labelledby="modalTitle">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow">Transaction</p>
+                    <h2 id="modalTitle">Add Transaction</h2>
+                </div>
+                <button class="icon-button" type="button" id="closeModal"
+                    aria-label="Close transaction modal">×</button>
+            </div>
+            <form id="transactionForm" class="form-grid">
+                <input type="hidden" id="transactionId">
+                <div class="field">
+                    <label>Type</label>
+                    <div class="type-toggle" role="group" aria-label="Transaction type">
+                        <button type="button" class="type-btn active" data-type="expense">Expense</button>
+                        <button type="button" class="type-btn" data-type="income">Income</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="category">Category</label>
+                    <select id="category" required>
+                        <option value="">Select category</option>
+                    </select>
+                </div>
+                <div class="field amount-field">
+                    <label for="amount">Amount</label>
+                    <div class="rupee-input">
+                        <span>₹</span>
+                        <input type="number" id="amount" min="0.01" step="0.01" required placeholder="0.00"
+                            inputmode="decimal">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="description">Description <small id="descriptionCount">0/80</small></label>
+                    <input type="text" id="description" maxlength="80" placeholder="Coffee, rent, salary, refund...">
+                </div>
+                <div class="field">
+                    <label for="date">Date</label>
+                    <input type="date" id="date" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="secondary-button" id="cancelBtn">Cancel</button>
+                    <button type="submit" class="primary-action">Save Transaction</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="budgetModal" role="dialog" aria-modal="true"
+        aria-labelledby="budgetModalTitle">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow">Budget</p>
+                    <h2 id="budgetModalTitle">Add Budget</h2>
+                </div>
+                <button class="icon-button" type="button" id="closeBudgetModal"
+                    aria-label="Close budget modal">×</button>
+            </div>
+            <form id="budgetForm" class="form-grid">
+                <div class="field">
+                    <label for="budgetCategory">Expense Category</label>
+                    <select id="budgetCategory" required>
+                        <option value="">Select expense category</option>
+                    </select>
+                </div>
+                <div class="field amount-field">
+                    <label for="budgetAmount">Monthly Budget</label>
+                    <div class="rupee-input">
+                        <span>₹</span>
+                        <input type="number" id="budgetAmount" min="1" step="1" required placeholder="0"
+                            inputmode="numeric">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="budgetMonthInput">Month</label>
+                    <input type="month" id="budgetMonthInput" required>
+                </div>
+                <p class="form-hint" id="budgetExistingHint">Existing budget amounts are replaced for the selected
+                    category and month.</p>
+                <div class="form-actions">
+                    <button type="button" class="secondary-button" id="cancelBudgetBtn">Cancel</button>
+                    <button type="submit" class="primary-action">Save Budget</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer" aria-live="polite" aria-label="Notifications"></div>
+
+    <!-- AI Advisor Chat Widget -->
+    <div class="chat-widget" id="chatWidget">
+        <button class="chat-toggle" id="chatToggle" type="button" aria-label="Open AI Advisor Chat">
+            <span class="chat-toggle__icon">✨</span>
+        </button>
+        <div class="chat-panel hidden" id="chatPanel">
+            <div class="chat-header">
+                <div class="chat-header__info">
+                    <h3>AI Finance Advisor</h3>
+                    <p>Data-backed guidance for this month</p>
+                </div>
+                <button class="icon-button" id="closeChat" type="button" aria-label="Close chat">×</button>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <div class="message assistant">
+                    <p>Hi! Ask me things like “How much did I spend on food this month?”</p>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" placeholder="How much did I spend on food?" aria-label="Type your message">
+                <button class="chat-send" id="chatSend" type="button" aria-label="Send message">
+                    <span>↑</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="charts.js?v=phase1-stream"></script>
+    <script src="app.js?v=phase1-stream"></script>
+</body>
+
+</html>
