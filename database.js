@@ -22,11 +22,11 @@ async function initializeDatabase() {
 
     // Run schema
     const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-    db.run(schema);
+    db.exec(schema);
 
     // Run seed data
     const seed = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
-    db.run(seed);
+    db.exec(seed);
 
     // Save to file
     saveDatabase();
@@ -360,6 +360,7 @@ function deleteRecurringTransaction(id) {
 
 module.exports = {
     initializeDatabase,
+    getDb,
     getUserById,
     getAllUsers,
     getAllCategories,

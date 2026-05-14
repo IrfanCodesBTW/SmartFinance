@@ -100,10 +100,7 @@ async function deleteCachePattern(pattern) {
         const batchSize = 100;
 
         do {
-            const [newCursor, keys] = await client.scan(cursor, {
-                MATCH: pattern,
-                COUNT: batchSize
-            });
+            const [newCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', batchSize);
             cursor = newCursor;
 
             if (keys && keys.length > 0) {
@@ -150,6 +147,19 @@ async function getMemoryInfo() {
     }
 }
 
+async function flushAll() {
+    if (!isValkeyConnected()) {
+        return false;
+    }
+    try {
+        await client.flushall();
+        return true;
+    } catch (err) {
+        console.warn('[Valkey] flushAll error:', err.message);
+        return false;
+    }
+}
+
 initValkey();
 
 module.exports = {
@@ -159,6 +169,7 @@ module.exports = {
     deleteCache,
     deleteCachePattern,
     flushTag,
+    flushAll,
     getKeyCount,
     getMemoryInfo
 };
