@@ -9,7 +9,8 @@ const state = {
     transactionType: 'expense',
     editingTransactionId: null,
     selectedCategoryFilter: null,
-    predictions: []
+    predictions: [],
+    user: { name: 'Irfan' }
 };
 
 let budgetMonth = getCurrentMonth();
@@ -1113,6 +1114,23 @@ async function fetchRoast() {
     }
 }
 
+async function fetchUser() {
+    try {
+        const data = await apiCall('/user');
+        state.user = data;
+        const nameElement = document.querySelector('.user-name');
+        if (nameElement) nameElement.textContent = data.name;
+        
+        // Update avatar seed if it matches the name
+        const avatarImg = document.querySelector('.user-profile-toggle img');
+        if (avatarImg) {
+            avatarImg.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(data.name)}&backgroundColor=7C3AED`;
+        }
+    } catch (error) {
+        console.error('Failed to fetch user:', error);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         initTheme();
@@ -1121,6 +1139,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         initHeaderScrollState();
         initChatWidget();
 
+        await fetchUser();
         state.categories = await fetchCategories();
         window.initializeCharts?.();
 

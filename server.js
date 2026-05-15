@@ -47,15 +47,33 @@ function getCurrentMonth() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function buildFinanceAdvisorPrompt({ month, summary, trend, breakdown }) {
-    return `You are a personal finance advisor for an Indian college student.
+function buildFinanceAdvisorPrompt({ month, summary, trend, breakdown, userName }) {
+    return `You are a personal finance advisor for an Indian college student named ${userName}.
 Their financial data this month (${month}): ${JSON.stringify(summary)}
 Category breakdown: ${JSON.stringify(breakdown)}
 Six-month trend: ${JSON.stringify(trend)}
 Answer concisely. Use ₹ for amounts. Be practical.
+Always refer to the user as ${userName}, but you MUST also use creative, finance-themed nicknames occasionally (like "Budget Boss ${userName}" or "Chai-Expert ${userName}").
 If the user asks about a category, use the category names and totals from the JSON.
 Do not invent transactions or amounts that are not present in the data.`;
 }
+
+// ============================================
+// User API - MODULE I: Read operations
+// ============================================
+
+app.get('/api/user', async (req, res) => {
+    try {
+        const user = database.getUserById(1);
+        if (user) {
+            apiResponse(res, true, user);
+        } else {
+            apiResponse(res, false, null, 'User not found');
+        }
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
 
 // ============================================
 // Cache Status API - Monitoring
@@ -143,7 +161,7 @@ app.post('/api/suggest-category', async (req, res) => {
 And these available categories: ${categoryNames}
 Return ONLY the most likely category name. No explanation.`;
 
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); // Standard model, should be valid. Using latest alias if available.
         const result = await model.generateContent(prompt);
         const suggestedName = result.response.text().trim();
 
@@ -522,16 +540,23 @@ app.get('/api/roast', async (req, res) => {
         const breakdown = database.getCategoryBreakdown(month);
         const health = database.getBudgetHealth(month);
 
-        const prompt = `You are a brutally honest but funny financial advisor.
-Roast this Indian college student's spending for ${month}:
+        const user = database.getUserById(1);
+        const userName = user ? user.name : 'Irfan';
+
+        const prompt = `You are a brutally honest but funny financial advisor. 
+The user's real name is ${userName}.
+Roast ${userName}'s spending for ${month}:
 ${JSON.stringify(breakdown)}
 Budget status: ${JSON.stringify(health)}
-Write 3–4 punchy sentences. Use ₹. Be specific, funny, and actionable. Keep it concise.`;
+Rules for the roast:
+1. Always refer to the user by their real name, ${userName}, when mentioning them.
+2. YOU MUST ALSO give them a funny, slightly insulting nickname based on their name or their spending habits (e.g., "${userName} the Wallet-Burner", "Broke-Irfan"). Use this nickname in the message.
+3. Write 3–4 punchy sentences. Use ₹. Be specific, funny, and actionable. Keep it concise.`;
 
         const completion = await groq.chat.completions.create({
             model: 'llama-3.1-8b-instant',
             messages: [{ role: 'user', content: prompt }],
-            temperature: 0.8,
+            temperature: 0.85,
             max_tokens: 500
         });
 
@@ -644,6 +669,9 @@ app.post('/api/chat', async (req, res) => {
         const breakdown = database.getCategoryBreakdown(chatMonth);
         const monthlyExpenseByCategory = database.getExpenseByCategory(chatMonth);
 
+        const user = database.getUserById(1);
+        const userName = user ? user.name : 'Irfan';
+
         const systemPrompt = buildFinanceAdvisorPrompt({
             month: chatMonth,
             summary,
@@ -651,15 +679,25 @@ app.post('/api/chat', async (req, res) => {
             breakdown: {
                 top_categories: breakdown,
                 this_month_by_category: monthlyExpenseByCategory
-            }
+            },
+            userName
         });
+
+        // ============================================
+        // CHAT MEMORY IMPLEMENTATION (VALKEY)
+        // ============================================
+        const historyKey = 'sf:ai:chat:history';
+        const history = await valkey.getCache(historyKey) || [];
+
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...history,
+            { role: 'user', content: message.trim() }
+        ];
 
         const completionParams = {
             model: 'llama-3.3-70b-versatile',
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: message.trim() }
-            ],
+            messages,
             temperature: stream ? 1 : 0.35,
             top_p: 1,
             max_completion_tokens: stream ? 1024 : 450,
@@ -672,17 +710,35 @@ app.post('/api/chat', async (req, res) => {
             res.setHeader('Cache-Control', 'no-cache, no-transform');
             res.setHeader('X-Accel-Buffering', 'no');
 
+            let fullAnswer = '';
             for await (const chunk of completionStream) {
                 const token = chunk.choices?.[0]?.delta?.content || '';
-                if (token) res.write(token);
+                if (token) {
+                    fullAnswer += token;
+                    res.write(token);
+                }
             }
+
+            // Save history after stream completes
+            const newHistory = [...history, 
+                { role: 'user', content: message.trim() }, 
+                { role: 'assistant', content: fullAnswer }
+            ].slice(-10); // Keep last 10 messages for memory
+            await valkey.setCache(historyKey, newHistory, 1800); // 30 min TTL
 
             return res.end();
         }
 
         const completion = await groq.chat.completions.create(completionParams);
-
         const answer = completion.choices?.[0]?.message?.content?.trim();
+
+        // Save history for non-streaming response
+        const newHistory = [...history, 
+            { role: 'user', content: message.trim() }, 
+            { role: 'assistant', content: answer }
+        ].slice(-10);
+        await valkey.setCache(historyKey, newHistory, 1800);
+
         apiResponse(res, true, {
             answer: answer || 'I could not generate an answer from the current financial data.',
             month: chatMonth,

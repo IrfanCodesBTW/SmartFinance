@@ -67,9 +67,11 @@ async function setCache(key, value, ttlSeconds) {
     }
     try {
         const serialized = JSON.stringify(value);
-        await client.set(key, serialized, {
-            EX: ttlSeconds
-        });
+        if (ttlSeconds) {
+            await client.set(key, serialized, 'EX', ttlSeconds);
+        } else {
+            await client.set(key, serialized);
+        }
         return true;
     } catch (err) {
         console.warn('[Valkey] setCache error for key', key, ':', err.message);

@@ -41,23 +41,21 @@ This project is built heavily around normalized relational database design (3NF)
 
 *(See `SPEC.md` for a complete breakdown of DBMS module coverage.)*
 
-## 🏁 Getting Started
+## 🚀 Quick Start (Windows)
 
-### Prerequisites
-- Node.js (v14 or higher)
-- npm
+The easiest way to run the entire project (including the Valkey cache) is to use the automated startup script:
 
-### Installation & Setup
+1.  Ensure **Docker Desktop** is running.
+2.  Double-click **`start.bat`** in the project root.
 
-1. **Clone the repository** (if applicable) or navigate to the project folder:
-   ```bash
-   cd SmartFinance
-   ```
+This script will automatically:
+- Check for Docker and start the **Valkey** container.
+- Install any missing **npm dependencies**.
+- Launch the **SmartFinance server** at [http://localhost:3000](http://localhost:3000).
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+---
+
+## 🛠️ Manual Installation & Setup
 
 3. **Start the application:**
    ```bash
