@@ -45,6 +45,11 @@ function isValkeyConnected() {
     return isConnected && client !== null;
 }
 
+function debugCache(...args) {
+    if (process.env.SF_CACHE_DEBUG !== '1') return;
+    console.log('[Valkey]', ...args);
+}
+
 async function getCache(key) {
     if (!isValkeyConnected()) {
         return null;
@@ -72,6 +77,7 @@ async function setCache(key, value, ttlSeconds) {
         } else {
             await client.set(key, serialized);
         }
+        debugCache('set', key, ttlSeconds ? `${ttlSeconds}s` : 'no-ttl');
         return true;
     } catch (err) {
         console.warn('[Valkey] setCache error for key', key, ':', err.message);
@@ -119,6 +125,7 @@ async function deleteCachePattern(pattern) {
 }
 
 async function flushTag(tag) {
+    debugCache('flush tag', tag);
     return deleteCachePattern(`sf:${tag}:*`);
 }
 

@@ -1,8 +1,8 @@
-// SmartFinance Charts - theme-aware Chart.js configuration
-
 let expenseChartInstance = null;
 let analyticsChartInstance = null;
 let trendChartInstance = null;
+let dashboardTrendChartInstance = null;
+let selectedExpenseCategory = null;
 
 const latestChartData = {
     dashboardExpense: [],
@@ -10,7 +10,12 @@ const latestChartData = {
     analyticsCategory: []
 };
 
-const chartPalette = ['#7C3AED', '#10B981', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4', '#F97316'];
+const chartPalette = ['#FF6B35', '#10B981', '#3B82F6', '#F59E0B', '#2D2D3F', '#06B6D4', '#F97316', '#FF8C5A'];
+let centerTextRegistered = false;
+
+function chartDebug(...args) {
+    if (window.__SF_DEBUG__) console.log('[SmartFinance][Charts]', ...args);
+}
 
 function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -18,52 +23,91 @@ function cssVar(name) {
 
 function getThemeColors() {
     return {
-        bg: cssVar('--color-bg') || '#09090E',
-        surface: cssVar('--color-surface') || 'rgba(255,255,255,0.035)',
-        accent: cssVar('--color-accent') || '#7C3AED',
-        income: cssVar('--color-income') || '#10B981',
-        expense: cssVar('--color-expense') || '#EF4444',
-        savings: cssVar('--color-savings') || '#3B82F6',
-        warning: cssVar('--color-warning') || '#F59E0B',
-        text: cssVar('--color-text') || '#F1F5F9',
-        muted: cssVar('--color-muted') || '#64748B',
-        border: cssVar('--color-border') || 'rgba(255,255,255,0.07)',
-        grid: cssVar('--color-chart-grid') || 'rgba(255,255,255,0.04)'
+        bg: cssVar('--sf-bg-void') || '#060610',
+        surface: cssVar('--sf-bg-panel') || '#11112A',
+        panel: cssVar('--sf-bg-panel') || '#11112A',
+        text: cssVar('--sf-text') || '#F1F5F9',
+        muted: cssVar('--sf-muted') || '#64748B',
+        outline: cssVar('--sf-border') || 'rgba(139,92,246,0.18)',
+        accent: cssVar('--sf-accent') || '#FF6B35',
+        success: cssVar('--sf-income') || '#10B981',
+        danger: cssVar('--sf-expense') || '#FF6B35',
+        warning: cssVar('--sf-warning') || '#F59E0B',
+        savings: cssVar('--sf-savings') || '#3B82F6'
     };
 }
 
 function formatRupees(value) {
-    return `₹${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    return `Rs. ${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+}
+
+function hexToRGBA(hex, alpha) {
+    const clean = String(hex || '').replace('#', '').trim();
+    if (!/^[0-9a-f]{6}$/i.test(clean)) return `rgba(255, 107, 53, ${alpha})`;
+    const bigint = parseInt(clean, 16);
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function registerCenterTextPlugin() {
+    if (!window.Chart || centerTextRegistered) return;
+    Chart.register({
+        id: 'centerText',
+        afterDraw(chart) {
+            const opt = chart.options.plugins?.centerText;
+            const isDisplayEnabled = opt && (opt.display === true || opt.display === undefined);
+            if (!isDisplayEnabled) return;
+            const { ctx, chartArea: { left, right, top, bottom } } = chart;
+            const cx = (left + right) / 2;
+            const cy = (top + bottom) / 2;
+            const textConfig = typeof opt.text === 'function' ? opt.text(chart) : opt.text;
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = getThemeColors().text;
+            if (typeof textConfig === 'object' && textConfig.top && textConfig.bottom) {
+                ctx.font = "600 0.85rem 'Inter', sans-serif";
+                ctx.fillText(textConfig.top, cx, cy - 10);
+                ctx.font = "700 1.1rem 'Inter', sans-serif";
+                ctx.fillText(textConfig.bottom, cx, cy + 10);
+            } else {
+                ctx.font = "700 1.1rem 'Inter', sans-serif";
+                ctx.fillText(textConfig || '', cx, cy);
+            }
+            ctx.restore();
+        }
+    });
+    centerTextRegistered = true;
 }
 
 function applyChartDefaults() {
+    if (!window.Chart) return;
+    registerCenterTextPlugin();
     const theme = getThemeColors();
     Chart.defaults.color = theme.muted;
-    Chart.defaults.font.family = "'Inter', sans-serif";
+    Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
     Chart.defaults.font.size = 12;
-    Chart.defaults.plugins.tooltip.enabled = true;
 }
 
 function tooltipOptions() {
     const theme = getThemeColors();
     return {
-        backgroundColor: document.documentElement.dataset.theme === 'dark' ? '#1e1e2e' : '#FFFFFF',
+        backgroundColor: theme.panel,
         titleColor: theme.text,
         bodyColor: theme.text,
-        borderColor: theme.border,
+        borderColor: theme.outline,
         borderWidth: 1,
-        cornerRadius: 8,
+        cornerRadius: 12,
         padding: 12,
-        displayColors: true,
-        usePointStyle: true,
-        boxPadding: 6,
         callbacks: {
             label(context) {
                 const label = context.dataset.label ? `${context.dataset.label}: ` : '';
                 const value = context.parsed?.y ?? context.raw ?? 0;
                 if (context.chart.config.type === 'doughnut') {
                     const total = context.dataset.data.reduce((sum, item) => sum + Number(item || 0), 0);
-                    const pct = total ? ((Number(value) / total) * 100).toFixed(1) : '0.0';
+                    const pct = total ? Math.round((Number(value) / total) * 100) : 0;
                     return `${label}${formatRupees(value)} (${pct}%)`;
                 }
                 return `${label}${formatRupees(value)}`;
@@ -76,34 +120,46 @@ function destroyChart(chart) {
     if (chart) chart.destroy();
 }
 
+function colorForCategory(item, index) {
+    const base = item.color || chartPalette[index % chartPalette.length];
+    const isDimmed = selectedExpenseCategory && selectedExpenseCategory !== item.name;
+    return isDimmed ? hexToRGBA(base, 0.25) : base;
+}
+
 function buildLegend(containerId, data) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
     if (!data || data.length === 0) {
-        container.innerHTML = '<div class="empty-state"><div class="empty-illustration">₹</div><h3>No category spend yet</h3><p>Add an expense to see category contribution.</p></div>';
+        container.innerHTML = '<div class="empty-state">No category spend yet.</div>';
         return;
     }
 
     const total = data.reduce((sum, item) => sum + Number(item.total || 0), 0);
     container.innerHTML = data.map((item, index) => {
-        const color = item.color || chartPalette[index % chartPalette.length];
+        const color = colorForCategory(item, index);
         const pct = total ? Math.round((Number(item.total || 0) / total) * 100) : 0;
+        const active = selectedExpenseCategory === item.name ? ' aria-current="true"' : '';
         return `
-            <div class="legend-row">
-                <div class="legend-label">
+            <button class="legend-row" type="button" data-expense-category="${encodeURIComponent(item.name)}"${active}>
+                <span class="legend-label">
                     <span class="legend-dot" style="background:${color}"></span>
                     <span>${item.icon || ''} ${item.name}</span>
-                </div>
-                <div class="legend-amount">${formatRupees(item.total)} · ${pct}%</div>
-            </div>
+                </span>
+                <strong>${formatRupees(item.total)} · ${pct}%</strong>
+            </button>
         `;
     }).join('');
+    container.querySelectorAll('[data-expense-category]').forEach(button => {
+        button.addEventListener('click', () => {
+            setSelectedExpenseCategory(decodeURIComponent(button.dataset.expenseCategory || ''));
+        });
+    });
 }
 
 function initExpenseChart(canvasId) {
     const canvas = document.getElementById(canvasId);
-    if (!canvas) return null;
+    if (!canvas || !window.Chart) return null;
 
     const theme = getThemeColors();
     return new Chart(canvas, {
@@ -113,152 +169,105 @@ function initExpenseChart(canvasId) {
             datasets: [{
                 data: [],
                 backgroundColor: [],
-                borderColor: 'transparent',
-                borderWidth: 0,
-                hoverOffset: 6
+                borderColor: theme.panel,
+                borderWidth: 4,
+                hoverOffset: 10,
+                offset: ctx => {
+                    const name = ctx.chart.$sfCategories?.[ctx.dataIndex];
+                    return selectedExpenseCategory === name ? 22 : 0;
+                }
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             cutout: '68%',
-            layout: { padding: 4 },
+            onClick(event, elements, chart) {
+                chartDebug('expense chart click', { elements: elements.length, chart: canvasId });
+                if (!elements.length) {
+                    setSelectedExpenseCategory(null);
+                    return;
+                }
+                const index = elements[0].index;
+                const category = chart.$sfCategories?.[index] || chart.data.labels[index];
+                setSelectedExpenseCategory(category);
+            },
             plugins: {
                 legend: { display: false },
-                tooltip: tooltipOptions()
+                tooltip: tooltipOptions(),
+                centerText: {
+                    display: true,
+                    text: chart => {
+                        const data = chart.data?.datasets?.[0]?.data || [];
+                        const labels = chart.data?.labels || [];
+                        if (!data.length) return '\u2014';
+                        const total = data.reduce((sum, item) => sum + Number(item || 0), 0);
+                        if (total === 0) return '\u2014';
+                        let maxIndex = 0, maxValue = 0;
+                        data.forEach((value, index) => {
+                            if (Number(value || 0) > maxValue) { maxValue = Number(value || 0); maxIndex = index; }
+                        });
+                        const topCategory = labels[maxIndex] || '';
+                        const pct = Math.round((maxValue / total) * 100);
+                        return { top: topCategory.length > 10 ? topCategory.substring(0, 8) + '...' : topCategory, bottom: pct + '%' };
+                    }
+                }
             },
-            animation: {
-                animateRotate: true,
-                animateScale: true,
-                duration: 850,
-                easing: 'easeOutQuart'
-            }
-        },
-        plugins: [{
-            id: 'centerText',
-            afterDraw(chart) {
-                const { ctx, chartArea } = chart;
-                if (!chartArea) return;
-                const total = chart.data.datasets[0].data.reduce((sum, value) => sum + Number(value || 0), 0);
-                ctx.save();
-                ctx.font = '700 12px Inter, sans-serif';
-                ctx.fillStyle = theme.muted;
-                ctx.textAlign = 'center';
-                ctx.fillText('Total Spend', (chartArea.left + chartArea.right) / 2, (chartArea.top + chartArea.bottom) / 2 - 8);
-                ctx.font = '800 18px "JetBrains Mono", monospace';
-                ctx.fillStyle = theme.text;
-                ctx.fillText(formatRupees(total), (chartArea.left + chartArea.right) / 2, (chartArea.top + chartArea.bottom) / 2 + 18);
-                ctx.restore();
-            }
-        }]
+            animation: { duration: 650 }
+        }
     });
 }
 
 function updateExpenseChart(chartInstance, data, legendId = null) {
     if (!chartInstance) return;
-
     const chartData = Array.isArray(data) ? data : [];
-    chartInstance.data.labels = chartData.map(item => `${item.icon || ''} ${item.name}`);
+    chartInstance.$sfRawData = chartData;
+    chartInstance.$sfLegendId = legendId;
+    chartInstance.$sfCategories = chartData.map(item => item.name);
+    chartInstance.data.labels = chartData.map(item => item.name);
     chartInstance.data.datasets[0].data = chartData.map(item => Number(item.total || 0));
-    chartInstance.data.datasets[0].backgroundColor = chartData.map((item, index) => item.color || chartPalette[index % chartPalette.length]);
-    chartInstance.update('active');
-
+    chartInstance.data.datasets[0].backgroundColor = chartData.map(colorForCategory);
+    chartInstance.data.datasets[0].borderColor = getThemeColors().panel;
+    chartInstance.options.plugins.tooltip = tooltipOptions();
+    chartDebug('expense chart redraw', { legendId, items: chartData.length, selectedExpenseCategory });
+    chartInstance.update();
     if (legendId) buildLegend(legendId, chartData);
 }
 
-function initAnalyticsChart() {
-    return initExpenseChart('analyticsChart');
+function setSelectedExpenseCategory(category) {
+    selectedExpenseCategory = selectedExpenseCategory === category ? null : category;
+    window.updateExpenseBreakdown?.(selectedExpenseCategory);
+    updateExpenseChart(expenseChartInstance, latestChartData.dashboardExpense, 'expenseLegend');
+    updateExpenseChart(analyticsChartInstance, latestChartData.analyticsCategory, 'analyticsLegend');
 }
 
-function initTrendChart() {
-    const canvas = document.getElementById('trendChart');
-    if (!canvas) return null;
+function initTrendChart(canvasId = 'trendChart') {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !window.Chart) return null;
 
     const theme = getThemeColors();
-    const ctx = canvas.getContext('2d');
-    const incomeGradient = ctx.createLinearGradient(0, 0, 0, 360);
-    incomeGradient.addColorStop(0, 'rgba(16, 185, 129, 0.22)');
-    incomeGradient.addColorStop(1, 'rgba(16, 185, 129, 0)');
-
-    const expenseGradient = ctx.createLinearGradient(0, 0, 0, 360);
-    expenseGradient.addColorStop(0, 'rgba(239, 68, 68, 0.20)');
-    expenseGradient.addColorStop(1, 'rgba(239, 68, 68, 0)');
-
     return new Chart(canvas, {
         type: 'line',
         data: {
             labels: [],
             datasets: [
-                {
-                    label: 'Income',
-                    data: [],
-                    borderColor: theme.income,
-                    backgroundColor: incomeGradient,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 4,
-                    pointHoverRadius: 6,
-                    pointBackgroundColor: theme.income,
-                    pointBorderColor: theme.bg,
-                    pointBorderWidth: 2
-                },
-                {
-                    label: 'Expense',
-                    data: [],
-                    borderColor: theme.expense,
-                    backgroundColor: expenseGradient,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 4,
-                    pointHoverRadius: 6,
-                    pointBackgroundColor: theme.expense,
-                    pointBorderColor: theme.bg,
-                    pointBorderWidth: 2
-                }
+                { label: 'Income', data: [], borderColor: theme.success, backgroundColor: hexToRGBA('#10B981', .12), fill: true, tension: .42, pointRadius: 4 },
+                { label: 'Expense', data: [], borderColor: theme.danger, backgroundColor: hexToRGBA('#FF6B35', .10), fill: true, tension: .42, pointRadius: 4 }
             ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             interaction: { intersect: false, mode: 'index' },
-            plugins: {
-                legend: {
-                    position: 'top',
-                    align: 'end',
-                    labels: {
-                        color: theme.muted,
-                        boxWidth: 8,
-                        boxHeight: 8,
-                        usePointStyle: true,
-                        pointStyle: 'circle',
-                        padding: 18,
-                        font: { family: 'Inter', size: 12, weight: '700' }
-                    }
-                },
-                tooltip: tooltipOptions()
-            },
+            plugins: { legend: { position: 'top', align: 'end' }, tooltip: tooltipOptions() },
             scales: {
-                x: {
-                    grid: { display: false, drawBorder: false },
-                    border: { display: false },
-                    ticks: { color: theme.muted, font: { family: 'Inter', size: 12, weight: '600' } }
-                },
+                x: { grid: { display: false }, border: { display: false } },
                 y: {
                     beginAtZero: true,
-                    grid: { color: theme.grid, drawBorder: false },
+                    grid: { color: 'rgba(124, 58, 237, .14)' },
                     border: { display: false },
-                    ticks: {
-                        color: theme.muted,
-                        font: { family: 'Inter', size: 12, weight: '600' },
-                        callback(value) {
-                            return `₹${Number(value).toLocaleString('en-IN')}`;
-                        }
-                    }
+                    ticks: { callback: value => `Rs. ${Number(value).toLocaleString('en-IN')}` }
                 }
-            },
-            animation: {
-                duration: 850,
-                easing: 'easeOutQuart'
             }
         }
     });
@@ -266,18 +275,20 @@ function initTrendChart() {
 
 function updateTrendChart(chartInstance, data) {
     if (!chartInstance) return;
-
     const trendData = Array.isArray(data) ? data : [];
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
+    const theme = getThemeColors();
     chartInstance.data.labels = trendData.map(item => {
         const [year, month] = String(item.month || '').split('-');
-        const monthIndex = Number(month) - 1;
-        return `${monthNames[monthIndex] || item.month} ${String(year || '').slice(-2)}`;
+        return `${monthNames[Number(month) - 1] || item.month} ${String(year || '').slice(-2)}`;
     });
     chartInstance.data.datasets[0].data = trendData.map(item => Number(item.total_income || 0));
     chartInstance.data.datasets[1].data = trendData.map(item => Number(item.total_expense || 0));
-    chartInstance.update('active');
+    chartInstance.data.datasets[0].borderColor = theme.success;
+    chartInstance.data.datasets[1].borderColor = theme.danger;
+    chartInstance.options.plugins.tooltip = tooltipOptions();
+    chartDebug('trend chart redraw', { points: trendData.length });
+    chartInstance.update();
 }
 
 function initializeCharts() {
@@ -286,49 +297,41 @@ function initializeCharts() {
     destroyChart(expenseChartInstance);
     destroyChart(analyticsChartInstance);
     destroyChart(trendChartInstance);
+    destroyChart(dashboardTrendChartInstance);
     expenseChartInstance = initExpenseChart('expenseChart');
-    analyticsChartInstance = null;
-    trendChartInstance = null;
+    analyticsChartInstance = initExpenseChart('analyticsChart');
+    trendChartInstance = initTrendChart('trendChart');
+    dashboardTrendChartInstance = initTrendChart('dashboardTrendChart');
 }
 
-function updateDashboardCharts(expenseData) {
+function updateDashboardCharts(expenseData, trendData = latestChartData.analyticsTrend) {
     latestChartData.dashboardExpense = Array.isArray(expenseData) ? expenseData : [];
     if (!expenseChartInstance) expenseChartInstance = initExpenseChart('expenseChart');
+    if (!dashboardTrendChartInstance) dashboardTrendChartInstance = initTrendChart('dashboardTrendChart');
     updateExpenseChart(expenseChartInstance, latestChartData.dashboardExpense, 'expenseLegend');
+    updateTrendChart(dashboardTrendChartInstance, trendData);
 }
 
 function updateAnalyticsCharts(trendData, categoryData) {
     latestChartData.analyticsTrend = Array.isArray(trendData) ? trendData : [];
     latestChartData.analyticsCategory = Array.isArray(categoryData) ? categoryData : [];
-    if (!trendChartInstance) trendChartInstance = initTrendChart();
-    if (!analyticsChartInstance) analyticsChartInstance = initAnalyticsChart();
+    if (!trendChartInstance) trendChartInstance = initTrendChart('trendChart');
+    if (!analyticsChartInstance) analyticsChartInstance = initExpenseChart('analyticsChart');
     updateTrendChart(trendChartInstance, latestChartData.analyticsTrend);
     updateExpenseChart(analyticsChartInstance, latestChartData.analyticsCategory, 'analyticsLegend');
+    if (!dashboardTrendChartInstance) dashboardTrendChartInstance = initTrendChart('dashboardTrendChart');
+    updateTrendChart(dashboardTrendChartInstance, latestChartData.analyticsTrend);
 }
 
-function refreshChartsForTab(tabName) {
-    if (!window.Chart) return;
+function refreshChartsForTab() {
     applyChartDefaults();
-
-    if (tabName === 'dashboard') {
-        destroyChart(expenseChartInstance);
-        expenseChartInstance = initExpenseChart('expenseChart');
-        updateDashboardCharts(latestChartData.dashboardExpense);
-    }
-
-    if (tabName === 'analytics') {
-        destroyChart(trendChartInstance);
-        destroyChart(analyticsChartInstance);
-        trendChartInstance = initTrendChart();
-        analyticsChartInstance = initAnalyticsChart();
-        updateAnalyticsCharts(latestChartData.analyticsTrend, latestChartData.analyticsCategory);
-    }
 }
 
 function updateChartTheme() {
-    const activePanel = document.querySelector('.tab-panel.active');
-    const tabName = activePanel ? activePanel.id.replace('-panel', '') : 'dashboard';
-    refreshChartsForTab(tabName);
+    initializeCharts();
+    updateDashboardCharts(latestChartData.dashboardExpense, latestChartData.analyticsTrend);
+    updateAnalyticsCharts(latestChartData.analyticsTrend, latestChartData.analyticsCategory);
+    window.updateExpenseBreakdown?.(selectedExpenseCategory);
 }
 
 window.initializeCharts = initializeCharts;
@@ -338,3 +341,14 @@ window.updateExpenseChart = updateExpenseChart;
 window.updateTrendChart = updateTrendChart;
 window.updateChartTheme = updateChartTheme;
 window.refreshChartsForTab = refreshChartsForTab;
+window.hexToRGBA = hexToRGBA;
+window.__SF_CHART_STATE__ = () => ({
+    selectedExpenseCategory,
+    instances: {
+        dashboardExpense: Boolean(expenseChartInstance),
+        analyticsExpense: Boolean(analyticsChartInstance),
+        trend: Boolean(trendChartInstance),
+        dashboardTrend: Boolean(dashboardTrendChartInstance)
+    }
+});
+document.documentElement.dataset.sfChartsReady = 'true';

@@ -83,6 +83,16 @@ function getUserById(userId) {
     return queryOne('SELECT id, name, email, created_at FROM users WHERE id = ?', [userId]);
 }
 
+function updateUser(userId, user) {
+    const { name, email } = user;
+    runQuery(`
+        UPDATE users
+        SET name = ?, email = ?
+        WHERE id = ?
+    `, [name, email, userId]);
+    return getUserById(userId);
+}
+
 function getAllUsers() {
     return queryAll('SELECT id, name, email, created_at FROM users');
 }
@@ -161,8 +171,14 @@ function createTransaction(transaction) {
         VALUES (?, ?, ?, ?, ?)
     `, [user_id, category_id, amount, description, date]);
 
-    const lastId = queryOne('SELECT last_insert_rowid() as id');
-    return { id: lastId.id, ...transaction };
+    return queryOne(`
+        SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, c.type as category_type
+        FROM transactions t
+        JOIN categories c ON t.category_id = c.id
+        WHERE t.user_id = ?
+        ORDER BY t.id DESC
+        LIMIT 1
+    `, [user_id]);
 }
 
 function updateTransaction(id, transaction) {
@@ -345,13 +361,113 @@ function createRecurringTransaction(transaction) {
         VALUES (?, ?, ?, ?, ?, ?)
     `, [user_id, category_id, amount, description, frequency, next_due_date]);
 
-    const lastId = queryOne('SELECT last_insert_rowid() as id');
-    return { id: lastId.id, ...transaction };
+    return queryOne(`
+        SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color
+        FROM recurring_transactions r
+        JOIN categories c ON r.category_id = c.id
+        WHERE r.user_id = ?
+        ORDER BY r.id DESC
+        LIMIT 1
+    `, [user_id]);
 }
 
 function deleteRecurringTransaction(id) {
     runQuery('DELETE FROM recurring_transactions WHERE id = ? AND user_id = 1', [id]);
     return true;
+}
+
+// ============================================
+// Settings, Notifications, and Support
+// ============================================
+
+function getSettings(userId = 1) {
+    let settings = queryOne('SELECT * FROM user_settings WHERE user_id = ?', [userId]);
+    if (!settings) {
+        runQuery(`
+            INSERT INTO user_settings (user_id, theme, currency, monthly_goal, alert_threshold, ai_advisor_enabled, receipt_scan_enabled)
+            VALUES (?, 'dark', 'INR', 1000, 80, 1, 1)
+        `, [userId]);
+        settings = queryOne('SELECT * FROM user_settings WHERE user_id = ?', [userId]);
+    }
+    return settings;
+}
+
+function updateSettings(userId = 1, settings = {}) {
+    const current = getSettings(userId);
+    const next = {
+        theme: settings.theme || current.theme || 'dark',
+        currency: settings.currency || current.currency || 'INR',
+        monthly_goal: Number(settings.monthly_goal ?? current.monthly_goal ?? 1000),
+        alert_threshold: Number(settings.alert_threshold ?? current.alert_threshold ?? 80),
+        ai_advisor_enabled: settings.ai_advisor_enabled === undefined ? current.ai_advisor_enabled : Number(Boolean(settings.ai_advisor_enabled)),
+        receipt_scan_enabled: settings.receipt_scan_enabled === undefined ? current.receipt_scan_enabled : Number(Boolean(settings.receipt_scan_enabled))
+    };
+
+    runQuery(`
+        INSERT OR REPLACE INTO user_settings
+            (user_id, theme, currency, monthly_goal, alert_threshold, ai_advisor_enabled, receipt_scan_enabled, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `, [
+        userId,
+        next.theme,
+        next.currency,
+        next.monthly_goal,
+        next.alert_threshold,
+        next.ai_advisor_enabled,
+        next.receipt_scan_enabled
+    ]);
+
+    return getSettings(userId);
+}
+
+function createNotification(notification) {
+    const { user_id = 1, type, title, message } = notification;
+    runQuery(`
+        INSERT INTO notifications (user_id, type, title, message)
+        VALUES (?, ?, ?, ?)
+    `, [user_id, type, title, message]);
+    return queryOne(`
+        SELECT * FROM notifications
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    `, [user_id]);
+}
+
+function getStoredNotifications(userId = 1, limit = 20) {
+    return queryAll(`
+        SELECT * FROM notifications
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+    `, [userId, limit]);
+}
+
+function markNotificationsRead(userId = 1) {
+    runQuery('UPDATE notifications SET is_read = 1 WHERE user_id = ?', [userId]);
+    return true;
+}
+
+function createSupportRequest(request) {
+    const { user_id = 1, subject, category = 'General', message } = request;
+    runQuery(`
+        INSERT INTO support_requests (user_id, subject, category, message)
+        VALUES (?, ?, ?, ?)
+    `, [user_id, subject, category, message]);
+    return queryOne(`
+        SELECT * FROM support_requests
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    `, [user_id]);
+}
+
+function getSupportRequests(userId = 1) {
+    return queryAll(`
+        SELECT * FROM support_requests
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+    `, [userId]);
 }
 
 // ============================================
@@ -362,6 +478,7 @@ module.exports = {
     initializeDatabase,
     getDb,
     getUserById,
+    updateUser,
     getAllUsers,
     getAllCategories,
     getCategoriesByType,
@@ -383,5 +500,12 @@ module.exports = {
     getCurrentMonthDay,
     getRecurringTransactions,
     createRecurringTransaction,
-    deleteRecurringTransaction
+    deleteRecurringTransaction,
+    getSettings,
+    updateSettings,
+    createNotification,
+    getStoredNotifications,
+    markNotificationsRead,
+    createSupportRequest,
+    getSupportRequests
 };

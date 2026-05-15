@@ -1,21 +1,45 @@
-// SmartFinance - premium frontend application logic
-
 const state = {
     currentTab: 'dashboard',
     currentMonth: getCurrentMonth(),
     transactionsPage: 1,
     transactionsLimit: 10,
     categories: [],
+    metrics: {},
+    transactions: [],
+    recentTransactions: [],
+    budgets: [],
+    expenseByCategory: [],
+    trend: [],
+    alerts: [],
+    selectedExpenseCategory: null,
+    supportRequests: [],
     transactionType: 'expense',
     editingTransactionId: null,
     selectedCategoryFilter: null,
+    searchQuery: '',
     predictions: [],
-    user: { name: 'Irfan' }
+    user: { name: 'Irfan', email: 'irfan@example.com' },
+    settings: null,
+    notifications: []
 };
 
 let budgetMonth = getCurrentMonth();
-let monthNavLocked = false;
 let lastSummary = null;
+const roastCache = {};
+window.__SF_DEBUG__ = true;
+
+function debugLog(...args) {
+    if (!window.__SF_DEBUG__) return;
+    console.log('[SmartFinance]', ...args);
+}
+
+function debounce(fn, wait = 120) {
+    let timeout;
+    return (...args) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fn(...args), wait);
+    };
+}
 
 function getCurrentMonth() {
     const now = new Date();
@@ -24,34 +48,17 @@ function getCurrentMonth() {
 
 function formatMonth(monthStr) {
     const [year, month] = monthStr.split('-');
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'];
-    return `${monthNames[parseInt(month, 10) - 1]} ${year}`;
+    return new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(new Date(Number(year), Number(month) - 1, 1));
 }
 
 function formatDate(dateStr, long = false) {
     const date = new Date(`${dateStr}T00:00:00`);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    if (date.toDateString() === today.toDateString()) return 'Today';
-    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-
-    return new Intl.DateTimeFormat('en-IN', {
-        day: '2-digit',
-        month: long ? 'long' : 'short',
-        year: long ? 'numeric' : undefined
-    }).format(date);
+    if (Number.isNaN(date.getTime())) return dateStr || '';
+    return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: long ? 'long' : 'short', year: long ? 'numeric' : undefined }).format(date);
 }
 
 function formatCurrency(amount) {
-    return `₹${Number(amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
-}
-
-function formatAmount(amount, type) {
-    const prefix = type === 'income' ? '+' : '-';
-    return `${prefix}${formatCurrency(amount)}`;
+    return `Rs. ${Number(amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
 
 function escapeHtml(value = '') {
@@ -63,370 +70,475 @@ function escapeHtml(value = '') {
         .replaceAll("'", '&#039;');
 }
 
-function hasMotion() {
-    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function withGsap(callback) {
-    if (window.gsap && hasMotion()) callback(window.gsap);
-}
-
-function animateAmount(element, value) {
-    if (!element) return;
-    const numeric = Math.abs(Number(value || 0));
-    if (!window.gsap || !hasMotion()) {
-        element.textContent = formatCurrency(numeric);
-        return;
-    }
-
-    const proxy = { value: 0 };
-    window.gsap.to(proxy, {
-        value: numeric,
-        duration: 1.2,
-        ease: 'power4.out',
-        onUpdate: () => {
-            element.textContent = formatCurrency(proxy.value);
-        }
-    });
-}
-
 function showToast(message, type = 'success') {
     const container = document.getElementById('toastContainer');
     if (!container) return;
-
-    while (container.children.length >= 3) {
-        container.firstElementChild?.remove();
-    }
-
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.innerHTML = `
-        <span aria-hidden="true">${type === 'error' ? '×' : '✓'}</span>
-        <span class="toast-message">${escapeHtml(message)}</span>
-        <button class="toast-close" type="button" aria-label="Dismiss notification">×</button>
-    `;
-
-    const close = () => {
-        toast.classList.add('hiding');
-        setTimeout(() => toast.remove(), 260);
-    };
-
-    toast.querySelector('.toast-close').addEventListener('click', close);
+    toast.innerHTML = `<span class="material-symbols-outlined">${type === 'error' ? 'error' : 'check_circle'}</span><span>${escapeHtml(message)}</span><button class="toast-close" type="button" aria-label="Dismiss">×</button>`;
+    toast.querySelector('button').addEventListener('click', () => toast.remove());
     container.appendChild(toast);
-    setTimeout(close, 3000);
+    setTimeout(() => toast.remove(), 3600);
 }
 
 async function apiCall(endpoint, options = {}) {
-    try {
-        const response = await fetch(`/api${endpoint}`, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            },
-            ...options
-        });
-        
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            const text = await response.text();
-            console.error('Non-JSON response received:', text.substring(0, 200));
-            throw new Error(`Expected JSON but got ${contentType || 'unknown'}`);
-        }
-
-        const result = await response.json();
-        if (!result.success) throw new Error(result.error);
-        return result.data;
-    } catch (error) {
-        console.error(`API Error: ${endpoint}`, error);
-        showToast(error.message || 'Something went wrong', 'error');
-        throw error;
+    const response = await fetch(`/api${endpoint}`, {
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options
+    });
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+        throw new Error(`Expected JSON from ${endpoint}`);
     }
+    const result = await response.json();
+    if (!response.ok || result.success === false) throw new Error(result.error || 'Request failed');
+    return result.data ?? result;
 }
 
-async function fetchCategories() { return await apiCall('/categories'); }
-async function fetchSummary(month) { return await apiCall(`/summary?month=${month}`); }
-async function fetchTransactions(month, page = 1, categoryId = null) {
-    let url = `/transactions?month=${month}&page=${page}&limit=${state.transactionsLimit}`;
+const fetchCategories = () => apiCall('/categories');
+const fetchSummary = month => apiCall(`/summary?month=${month}`);
+const fetchRecentTransactions = (limit = 5) => apiCall(`/recent-transactions?limit=${limit}`);
+const fetchExpenseByCategory = month => apiCall(`/expense-by-category?month=${month}`);
+const fetchBudgetHealth = month => apiCall(`/budget-health?month=${month}`);
+const fetchTrendData = (months = 6) => apiCall(`/trend?months=${months}`);
+const createTransaction = data => apiCall('/transactions', { method: 'POST', body: JSON.stringify(data) });
+const updateTransaction = (id, data) => apiCall(`/transactions/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+const deleteTransaction = id => apiCall(`/transactions/${id}`, { method: 'DELETE' });
+const createBudget = data => apiCall('/budgets', { method: 'POST', body: JSON.stringify(data) });
+const fetchSettings = () => apiCall('/settings');
+const updateSettingsApi = data => apiCall('/settings', { method: 'PUT', body: JSON.stringify(data) });
+const updateUserApi = data => apiCall('/user', { method: 'PUT', body: JSON.stringify(data) });
+const fetchNotifications = () => apiCall(`/notifications?month=${state.currentMonth}`);
+const markNotificationsRead = () => apiCall('/notifications/read', { method: 'POST', body: '{}' });
+const fetchSupportRequests = () => apiCall('/support');
+const createSupportRequest = data => apiCall('/support', { method: 'POST', body: JSON.stringify(data) });
+
+async function fetchTransactions(month, page = 1, categoryId = null, limit = state.transactionsLimit) {
+    let url = `/transactions?month=${month}&page=${page}&limit=${limit}`;
     if (categoryId) url += `&category_id=${categoryId}`;
-    return await apiCall(url);
+    return apiCall(url);
 }
-async function fetchRecentTransactions(limit = 5) { return await apiCall(`/recent-transactions?limit=${limit}`); }
-async function fetchExpenseByCategory(month) { return await apiCall(`/expense-by-category?month=${month}`); }
-async function fetchBudgets(month) { return await apiCall(`/budgets?month=${month}`); }
-async function fetchBudgetHealth(month) { return await apiCall(`/budget-health?month=${month}`); }
-async function fetchTrendData(months = 6) { return await apiCall(`/trend?months=${months}`); }
-async function fetchCategoryBreakdown(month) { return await apiCall(`/category-breakdown?month=${month}`); }
+
 async function fetchPredictiveAlerts(force = false) {
     const cacheKey = `sf-predictions-${getCurrentMonth()}`;
-    const cached = localStorage.getItem(cacheKey);
-    const today = new Date().toDateString();
-    
-    if (cached && !force) {
-        const { date, data } = JSON.parse(cached);
-        if (date === today) return data;
+    if (!force) {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            const { date, data } = JSON.parse(cached);
+            if (date === new Date().toDateString()) return data;
+        }
     }
-
     try {
         const data = await apiCall('/predict-alerts');
-        localStorage.setItem(cacheKey, JSON.stringify({ date: today, data }));
+        localStorage.setItem(cacheKey, JSON.stringify({ date: new Date().toDateString(), data }));
         return data;
-    } catch (e) {
-        console.error('Failed to fetch predictions:', e);
+    } catch (error) {
         return [];
     }
 }
-async function fetchRecurring() { return await apiCall('/recurring'); }
-async function createRecurring(data) { return await apiCall('/recurring', { method: 'POST', body: JSON.stringify(data) }); }
-async function deleteRecurring(id) { return await apiCall(`/recurring/${id}`, { method: 'DELETE' }); }
-async function createTransaction(data) { return await apiCall('/transactions', { method: 'POST', body: JSON.stringify(data) }); }
-async function updateTransaction(id, data) { return await apiCall(`/transactions/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
-async function deleteTransaction(id) { return await apiCall(`/transactions/${id}`, { method: 'DELETE' }); }
-async function createBudget(data) { return await apiCall('/budgets', { method: 'POST', body: JSON.stringify(data) }); }
-async function sendChatMessage(message) {
-    const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            message,
-            month: state.currentMonth
-        })
-    });
-    const result = await response.json();
-    if (!result.success) throw new Error(result.error || 'The AI advisor is unavailable right now.');
-    return result.data;
-}
 
 async function streamChatMessage(message, onDelta) {
-    const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            message,
-            month: state.currentMonth,
-            stream: true
-        })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    if (!response.ok) {
-        const contentType = response.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-            const result = await response.json();
-            throw new Error(result.error || 'The AI advisor is unavailable right now.');
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, month: state.currentMonth, stream: true }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            const result = await response.json().catch(() => null);
+            throw new Error(result?.error || `Server error ${response.status}`);
         }
-        throw new Error(await response.text() || 'The AI advisor is unavailable right now.');
-    }
 
-    if (!response.body) {
-        const text = await response.text();
-        onDelta(text);
-        return text;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        fullText += chunk;
-        onDelta(chunk);
-    }
-
-    const tail = decoder.decode();
-    if (tail) {
-        fullText += tail;
-        onDelta(tail);
-    }
-
-    return fullText;
-}
-
-function initTheme() {
-    const savedTheme = localStorage.getItem('sf-theme') || 'dark';
-    applyTheme(savedTheme, false);
-    document.getElementById('themeToggle')?.addEventListener('click', () => {
-        const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-        applyTheme(nextTheme, true);
-    });
-}
-
-function applyTheme(theme, persist) {
-    document.documentElement.dataset.theme = theme;
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#09090E' : '#EEF0F5');
-    const toggle = document.getElementById('themeToggle');
-    if (toggle) {
-        toggle.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`);
-        toggle.querySelector('.theme-toggle__icon').textContent = theme === 'dark' ? '☾' : '☀';
-    }
-    if (persist) {
-        localStorage.setItem('sf-theme', theme);
-        window.updateChartTheme?.();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            fullText += chunk;
+            if (typeof onDelta === 'function') onDelta(chunk);
+        }
+        return fullText;
+    } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') throw new Error('Request timed out.');
+        throw err;
     }
 }
 
-function switchTab(tabName) {
-    state.currentTab = tabName;
+function applyTheme(theme, persist = true) {
+    const resolved = theme === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : theme;
+    document.documentElement.dataset.theme = resolved;
+    document.documentElement.classList.toggle('dark', resolved === 'dark');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#0b1220' : '#F8FAFC');
+    const label = document.getElementById('themeToggleLabel');
+    if (label) label.textContent = resolved === 'dark' ? 'Light mode' : 'Dark mode';
+    if (persist) localStorage.setItem('sf-theme', resolved);
+    window.updateChartTheme?.();
+}
 
-    document.querySelectorAll('.nav-tab, .mobile-nav-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabName);
-    });
+function switchTab(tabId) {
+    const currentPanel = document.querySelector('.screen.active');
+    if (currentPanel) {
+        currentPanel.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+        currentPanel.style.opacity = '0';
+        currentPanel.style.transform = 'translateY(-8px)';
+    }
+    
+    setTimeout(() => {
+        document.querySelectorAll('.nav-tab, .mobile-nav-tab').forEach(btn => {
+            btn.classList.remove('active');
+            btn.style.color = '';
+        });
 
-    document.querySelectorAll('.tab-panel').forEach(panel => {
-        panel.classList.toggle('active', panel.id === `${tabName}-panel`);
-    });
+        document.querySelectorAll(`[data-tab="${tabId}"]`).forEach(btn => {
+            btn.classList.add('active');
+        });
 
-    withGsap(gsap => {
-        gsap.fromTo(`#${tabName}-panel`, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.2, ease: 'power2.out' });
-        gsap.fromTo(`.mobile-nav-tab[data-tab="${tabName}"]`, { scale: 0.94 }, { scale: 1.08, duration: 0.18, yoyo: true, repeat: 1 });
-    });
+        document.querySelectorAll('.screen').forEach(panel => {
+            panel.classList.remove('active');
+            panel.style.opacity = '';
+            panel.style.transform = '';
+        });
+        
+        const panel = document.getElementById(`${tabId}-panel`);
+        if (panel) {
+            panel.classList.add('active');
+            panel.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+            panel.style.opacity = '0';
+            panel.style.transform = 'translateY(8px)';
+            panel.offsetHeight;
+            panel.style.opacity = '1';
+            panel.style.transform = 'translateY(0)';
+        }
 
-    window.refreshChartsForTab?.(tabName);
-    loadTabData(tabName);
+        document.getElementById('profileMenu')?.classList.add('hidden');
+        document.getElementById('profileToggle')?.setAttribute('aria-expanded', 'false');
+        state.currentTab = tabId;
+        debugLog('switch tab', tabId);
+        loadTabData(tabId);
+        runScreenAnimations();
+    }, 300);
 }
 
 async function loadTabData(tabName) {
-    switch (tabName) {
-        case 'dashboard':
-            await loadDashboard();
-            break;
-        case 'transactions':
-            await loadTransactions();
-            break;
-        case 'budgets':
-            await loadBudgets();
-            break;
-        case 'analytics':
-            await loadAnalytics();
-            break;
+    try {
+        if (tabName === 'dashboard') await loadDashboard();
+        if (tabName === 'transactions') await loadTransactions();
+        if (tabName === 'budgets') await loadBudgets();
+        if (tabName === 'analytics') await loadAnalytics();
+        if (tabName === 'support') await loadSupport();
+        if (tabName === 'notifications') await loadNotifications();
+        if (tabName === 'settings') await loadSettingsScreen();
+    } catch (error) {
+        console.error(error);
+        showToast(error.message || 'Something went wrong', 'error');
     }
+}
+
+function normalizeTransaction(tx) {
+    const type = tx.category_type || tx.type || 'expense';
+    return {
+        ...tx,
+        type,
+        category: tx.category_name || tx.category || 'Uncategorised',
+        amount: Number(tx.amount || 0)
+    };
+}
+
+function normalizeBudget(budget) {
+    return {
+        ...budget,
+        category: budget.category_name || budget.category || 'Budget',
+        limit: Number(budget.budget_amount ?? budget.limit ?? 0),
+        spent: Number(budget.spent_amount ?? budget.spent ?? 0)
+    };
+}
+
+async function refreshFinancialState({ reason = 'manual', month = state.currentMonth, includeSupport = false, includeSettings = false } = {}) {
+    debugLog('refresh pipeline start', { reason, month });
+    const [summary, fullTxResult, recentTx, expenseData, trendData, budgets, notifications, settings, supportRequests] = await Promise.all([
+        fetchSummary(month),
+        fetchTransactions(month, 1, null, 500),
+        fetchRecentTransactions(5),
+        fetchExpenseByCategory(month),
+        fetchTrendData(6),
+        fetchBudgetHealth(month),
+        fetchNotifications().catch(() => state.notifications),
+        includeSettings ? fetchSettings().catch(() => state.settings) : Promise.resolve(state.settings),
+        includeSupport ? fetchSupportRequests().catch(() => state.supportRequests) : Promise.resolve(state.supportRequests)
+    ]);
+
+    state.metrics = summary || {};
+    state.transactions = (fullTxResult.transactions || []).map(normalizeTransaction);
+    state.recentTransactions = (recentTx || []).map(normalizeTransaction);
+    state.expenseByCategory = Array.isArray(expenseData) ? expenseData : [];
+    state.trend = Array.isArray(trendData) ? trendData : [];
+    state.budgets = (budgets || []).map(normalizeBudget);
+    state.notifications = Array.isArray(notifications) ? notifications : [];
+    state.settings = settings;
+    state.supportRequests = Array.isArray(supportRequests) ? supportRequests : state.supportRequests;
+    lastSummary = state.metrics;
+
+    refreshMetrics();
+    renderWatchlist(state.expenseByCategory);
+    renderBudgetSpark(state.budgets);
+    renderRecentTransactions(state.recentTransactions);
+    renderNotifications(state.notifications);
+    document.getElementById('notificationDot')?.classList.toggle('is-empty', !state.notifications.some(n => !n.is_read));
+    if (includeSupport || state.currentTab === 'support') renderSupportRequests(state.supportRequests);
+    if (includeSettings || state.currentTab === 'settings') fillSettingsForm(state.settings || {});
+    refreshBudgets();
+    refreshAlerts();
+    refreshAnalytics();
+    refreshCharts();
+    if (state.currentTab === 'transactions') await loadTransactions();
+
+    window.updateExpenseBreakdown?.(state.selectedExpenseCategory);
+    runScreenAnimations();
+    debugLog('refresh pipeline complete', {
+        reason,
+        transactions: state.transactions.length,
+        budgets: state.budgets.length,
+        alerts: state.alerts.length
+    });
+}
+
+const debouncedRefreshFinancialState = debounce(refreshFinancialState, 120);
+
+function refreshMetrics() {
+    renderSummary(state.metrics);
+}
+
+function refreshCharts() {
+    debugLog('chart refresh requested');
+    try {
+        window.updateDashboardCharts?.(state.expenseByCategory, state.trend);
+        window.updateAnalyticsCharts?.(state.trend, state.expenseByCategory);
+    } catch (error) {
+        console.error('Chart refresh failed:', error);
+    }
+}
+
+function refreshBudgets() {
+    renderBudgetHero(state.budgets);
+    if (state.currentTab === 'budgets') renderBudgetCards(state.budgets);
+}
+
+function refreshAnalytics() {
+    const total = state.expenseByCategory.reduce((sum, item) => sum + Number(item.total || 0), 0);
+    setText('analyticsTotalSpend', formatCurrency(total));
+    renderTopCategories(state.expenseByCategory.slice(0, 5));
+    renderAnalyticsInsight(state.expenseByCategory, state.trend);
 }
 
 async function loadDashboard() {
-    try {
-        setSkeleton('recentTransactions', 4);
-        const [summary, recentTx, expenseData] = await Promise.all([
-            fetchSummary(state.currentMonth),
-            fetchRecentTransactions(5),
-            fetchExpenseByCategory(state.currentMonth)
-        ]);
-        lastSummary = summary || {};
+    setSkeleton('recentTransactions', 4);
+    await refreshFinancialState({ reason: 'dashboard load' });
+    loadPredictiveAlerts();
+}
 
-        const totalIncome = summary?.total_income || 0;
-        const totalExpense = summary?.total_expense || 0;
-        const savings = summary?.savings || (totalIncome - totalExpense);
-        const savingsRate = totalIncome ? Math.round((savings / totalIncome) * 100) : 0;
+function renderSummary(summary = {}) {
+    const totalIncome = Number(summary.total_income || 0);
+    const totalExpense = Number(summary.total_expense || 0);
+    const savings = Number(summary.savings || (totalIncome - totalExpense));
+    const savingsRate = totalIncome ? Math.round((savings / totalIncome) * 100) : 0;
+    const expenseRatio = totalIncome ? Math.min(100, Math.round((totalExpense / totalIncome) * 100)) : 0;
+    const health = Math.max(0, Math.min(100, 100 - expenseRatio + Math.max(0, savingsRate)));
 
-        animateAmount(document.getElementById('totalIncome'), totalIncome);
-        animateAmount(document.getElementById('totalExpense'), totalExpense);
-        animateAmount(document.getElementById('netSavings'), savings);
-        document.getElementById('netSavings').classList.toggle('amount--expense', savings < 0);
-        document.getElementById('netSavings').classList.toggle('amount--savings', savings >= 0);
-        document.getElementById('savingsRate').textContent = `Savings rate ${savingsRate}%`;
+    setText('totalIncome', formatCurrency(totalIncome));
+    setText('totalExpense', formatCurrency(totalExpense));
+    setText('netSavings', formatCurrency(savings));
+    setText('savingsRate', `Savings rate ${savingsRate}%`);
+    setText('healthScore', Math.round(health));
+    setText('healthLabel', health >= 75 ? 'Excellent' : health >= 50 ? 'Stable' : 'Needs attention');
+    const fill = document.getElementById('healthFill');
+    if (fill) fill.style.width = `${Math.round(health)}%`;
+}
 
-        loadPredictiveAlerts();
-        renderRecentTransactions(recentTx);
-        window.updateDashboardCharts?.(expenseData);
-        animateDashboardLoad();
-    } catch (error) {
-        console.error('Dashboard load error:', error);
+function renderWatchlist(expenseData = []) {
+    const container = document.getElementById('watchlistCards');
+    if (!container) return;
+    const top = expenseData.slice(0, 3);
+    if (top.length === 0) {
+        container.innerHTML = '<div class="empty-state">No expense watchlist yet.</div>';
+        return;
     }
+    container.innerHTML = top.map(item => `
+        <article class="watch-card">
+            <div class="flexish">
+                <div class="avatar" style="color:${item.color || '#fe6b00'}">${item.icon || '₹'}</div>
+                <div><span>${escapeHtml(item.name)}</span><strong>${formatCurrency(item.total)}</strong></div>
+            </div>
+            <span class="material-symbols-outlined muted">monitoring</span>
+        </article>
+    `).join('');
+}
+
+function renderBudgetSpark(budgets = []) {
+    const container = document.getElementById('budgetSpark');
+    if (!container) return;
+    const items = budgets.slice(0, 6);
+    container.innerHTML = items.length ? items.map(item => {
+        const pct = item.budget_amount ? Math.min(100, Math.round((item.spent_amount / item.budget_amount) * 100)) : 0;
+        const remainingPct = Math.max(0, 100 - pct);
+        const spent = formatCurrency(item.spent_amount);
+        const limit = formatCurrency(item.budget_amount);
+        const tooltipText = `${escapeHtml(item.category_name)}: ${pct}% (${spent}/${limit})`;
+        return `<div class="bar-container"><span class="bar-tooltip">${tooltipText}</span><span class="bar-top" style="flex-grow: ${remainingPct}"></span><span class="bar-bottom" style="flex-grow: ${pct}"></span></div>`;
+    }).join('') : '<div class="empty-state">No budgets yet.</div>';
 }
 
 async function loadPredictiveAlerts(force = false) {
-    const container = document.getElementById('predictiveAlerts');
-    if (!container) return;
-
-    try {
-        if (force) {
-            container.style.opacity = '0.5';
-            container.style.pointerEvents = 'none';
-        }
-        const alerts = await fetchPredictiveAlerts(force);
-        state.predictions = alerts;
-        renderPredictiveAlerts(alerts);
-        if (force) {
-            container.style.opacity = '1';
-            container.style.pointerEvents = 'auto';
-            showToast('Alerts refreshed with latest data');
-            // Re-render budgets to update trend icons
-            if (state.currentTab === 'budgets') loadBudgets();
-        }
-    } catch (e) {
-        container.innerHTML = '';
-    }
+    const alerts = await fetchPredictiveAlerts(force);
+    state.predictions = alerts;
+    refreshAlerts();
+    if (force) showToast('Alerts refreshed');
 }
 
-function renderPredictiveAlerts(alerts) {
+function calculateBudgetPressure() {
+    if (!state.budgets || !state.transactions) return [];
+    const alerts = [];
+    for (const budget of state.budgets) {
+        const spent = state.transactions
+            .filter(t => t.type === 'expense' && t.category === budget.category)
+            .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+        const limit = Number(budget.limit || 0);
+        const usage = limit > 0 ? (spent / limit) * 100 : 0;
+        let risk = 'low';
+        if (usage >= 100) risk = 'critical';
+        else if (usage >= 85) risk = 'high';
+        else if (usage >= 70) risk = 'medium';
+        if (usage >= 70) alerts.push({ category: budget.category, spent, limit, usage, risk });
+    }
+    debugLog('[Budget Alerts]', alerts.map(a => ({ category: a.category, usage: Number(a.usage.toFixed(1)), risk: a.risk })));
+    return alerts;
+}
+
+function refreshAlerts() {
+    const localAlerts = calculateBudgetPressure();
+    const supplemental = (state.predictions || []).map(alert => ({
+        category: alert.category,
+        predicted_total: Number(alert.predicted_total || 0),
+        reason: alert.reason,
+        risk: alert.risk || 'medium',
+        isAi: true
+    }));
+    state.alerts = [...localAlerts, ...supplemental];
+    renderAlertList(state.alerts);
+}
+
+function renderAlertList(alerts) {
     const container = document.getElementById('predictiveAlerts');
-    if (!container || !alerts || alerts.length === 0) {
-        if (container) container.innerHTML = '';
+    if (!container) return;
+    if (!alerts || alerts.length === 0) {
+        container.innerHTML = '';
         return;
     }
-
-    container.innerHTML = alerts.map(alert => `
-        <div class="alert-banner alert-banner--${alert.risk}" data-animate>
-            <span class="alert-icon">${alert.risk === 'high' ? '⚠️' : 'ℹ️'}</span>
-            <div class="alert-content">
-                <strong>Budget Risk: ${escapeHtml(alert.category)}</strong>
-                <p>${escapeHtml(alert.reason)} Predicted: ${formatCurrency(alert.predicted_total)}</p>
-            </div>
+    container.innerHTML = alerts.map((alert, idx) => {
+        const risk = alert.risk === 'critical' ? 'high' : alert.risk;
+        const message = alert.isAi
+            ? `${escapeHtml(alert.reason || 'AI risk signal detected.')} Predicted: ${formatCurrency(alert.predicted_total)}`
+            : `${Math.round(alert.usage)}% used · ${formatCurrency(alert.spent)} of ${formatCurrency(alert.limit)}`;
+        return `
+        <div class="alert-banner alert-banner--${escapeHtml(risk)}" data-alert-idx="${idx}">
+            <span class="material-symbols-outlined">${risk === 'high' ? 'warning' : 'info'}</span>
+            <div><strong>${alert.isAi ? 'AI Budget Signal' : 'Budget Pressure'}: ${escapeHtml(alert.category)}</strong><p>${message}</p></div>
         </div>
-    `).join('');
-    
-    withGsap(gsap => gsap.fromTo('#predictiveAlerts .alert-banner', { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.4, stagger: 0.1, ease: 'power2.out' }));
+    `;
+    }).join('');
+    setTimeout(() => {
+        const banners = container.querySelectorAll('.alert-banner');
+        banners.forEach((banner, i) => {
+            setTimeout(() => {
+                banner.classList.add('fade-out');
+                setTimeout(() => banner.remove(), 400);
+            }, i * 150);
+        });
+    }, 12000);
 }
 
 function renderRecentTransactions(transactions) {
     const container = document.getElementById('recentTransactions');
     if (!container) return;
-
     if (!transactions || transactions.length === 0) {
-        container.innerHTML = emptyState('₹', `No transactions in ${formatMonth(state.currentMonth)}`, 'Add income or expenses to start seeing your financial rhythm.', true);
+        container.innerHTML = emptyState(`No transactions in ${formatMonth(state.currentMonth)}`);
         return;
     }
-
-    container.innerHTML = transactions.map(tx => transactionRow(tx, false)).join('');
-    withGsap(gsap => gsap.fromTo('#recentTransactions .recent-row', { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: 0.35, stagger: 0.06, ease: 'power3.out' }));
+    container.innerHTML = transactions.map(tx => transactionListRow(tx)).join('');
 }
 
 async function loadTransactions() {
-    try {
-        document.getElementById('currentMonth').textContent = formatMonth(state.currentMonth);
-        await loadCategoryFilters();
-        setSkeleton('transactionsList', 5);
-
-        const result = await fetchTransactions(state.currentMonth, state.transactionsPage, state.selectedCategoryFilter);
-        renderTransactions(result.transactions);
-        renderPagination(result);
-    } catch (error) {
-        console.error('Transactions load error:', error);
+    setText('currentMonth', formatMonth(state.currentMonth));
+    await loadCategoryFilters();
+    const result = await fetchTransactions(state.currentMonth, state.transactionsPage, state.selectedCategoryFilter);
+    let transactions = result.transactions || [];
+    if (state.searchQuery) {
+        const q = state.searchQuery.toLowerCase();
+        transactions = transactions.filter(tx =>
+            String(tx.description || '').toLowerCase().includes(q) ||
+            String(tx.category_name || '').toLowerCase().includes(q)
+        );
     }
+    renderTransactions(transactions);
+    renderPagination(result);
 }
 
 async function loadCategoryFilters() {
     const container = document.getElementById('categoryFilters');
     if (!container) return;
     if (state.categories.length === 0) state.categories = await fetchCategories();
-
     const expenseCategories = state.categories.filter(c => c.type === 'expense');
-    container.innerHTML = `
-        <button class="category-pill ${!state.selectedCategoryFilter ? 'active' : ''}" type="button" data-category="">All</button>
-        ${expenseCategories.map(cat => `
-            <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" type="button" data-category="${cat.id}">
-                <span>${cat.icon}</span><span>${escapeHtml(cat.name)}</span>
-            </button>
-        `).join('')}
-    `;
-
+    container.innerHTML = `<button class="category-pill ${!state.selectedCategoryFilter ? 'active' : ''}" type="button" data-category="">All</button>` +
+        expenseCategories.map(cat => `<button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" type="button" data-category="${cat.id}">${cat.icon || ''} ${escapeHtml(cat.name)}</button>`).join('');
+    const transactionsList = document.getElementById('transactionsList');
     container.querySelectorAll('.category-pill').forEach(pill => {
         pill.addEventListener('click', () => {
-            const categoryId = pill.dataset.category;
-            state.selectedCategoryFilter = categoryId ? parseInt(categoryId, 10) : null;
-            state.transactionsPage = 1;
-            loadTransactions();
+            const newFilter = pill.dataset.category ? Number(pill.dataset.category) : null;
+            if (state.selectedCategoryFilter === newFilter) return;
+            if (transactionsList) {
+                transactionsList.style.transition = 'opacity 0.3s ease';
+                transactionsList.style.opacity = '0';
+                setTimeout(() => {
+                    state.selectedCategoryFilter = newFilter;
+                    state.transactionsPage = 1;
+                    loadTransactions().then(() => {
+                        if (transactionsList) transactionsList.style.opacity = '1';
+                    });
+                }, 300);
+            } else {
+                state.selectedCategoryFilter = newFilter;
+                state.transactionsPage = 1;
+                loadTransactions();
+            }
+        });
+        pill.addEventListener('dblclick', () => {
+            if (transactionsList) {
+                transactionsList.style.transition = 'opacity 0.3s ease';
+                transactionsList.style.opacity = '0';
+                setTimeout(() => {
+                    state.selectedCategoryFilter = null;
+                    state.transactionsPage = 1;
+                    loadCategoryFilters();
+                    loadTransactions().then(() => {
+                        if (transactionsList) transactionsList.style.opacity = '1';
+                    });
+                }, 300);
+            } else {
+                state.selectedCategoryFilter = null;
+                state.transactionsPage = 1;
+                loadCategoryFilters();
+                loadTransactions();
+            }
         });
     });
 }
@@ -434,602 +546,448 @@ async function loadCategoryFilters() {
 function renderTransactions(transactions) {
     const container = document.getElementById('transactionsList');
     if (!container) return;
-
     if (!transactions || transactions.length === 0) {
-        container.innerHTML = emptyState('0', `No expenses in ${formatMonth(state.currentMonth)}`, 'Switch months, clear the filter, or add your first transaction for this period.', true);
+        container.innerHTML = `<tr><td colspan="5">${emptyState('No transactions match this view.')}</td></tr>`;
         return;
     }
-
-    const groups = {};
-    transactions.forEach(tx => {
-        const key = formatDate(tx.date, true);
-        if (!groups[key]) groups[key] = [];
-        groups[key].push(tx);
-    });
-
-    container.innerHTML = Object.entries(groups).map(([date, txs]) => `
-        <section class="date-group">
-            <div class="date-heading">${date}</div>
-            <div class="transaction-stack">${txs.map(tx => transactionRow(tx, true)).join('')}</div>
-        </section>
-    `).join('');
-
-    withGsap(gsap => gsap.fromTo('#transactionsList .transaction-row', { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.28, stagger: 0.035, ease: 'power3.out' }));
+    container.innerHTML = transactions.map(tx => {
+        const type = tx.category_type === 'income' ? 'income' : 'expense';
+        return `
+            <tr>
+                <td><div class="category-avatar" style="color:${tx.category_color || '#fe6b00'}">${tx.category_icon || '₹'}</div></td>
+                <td><div class="transaction-title">${escapeHtml(tx.description || tx.category_name || 'Transaction')}</div><div class="transaction-date">${escapeHtml(tx.category_name || '')} · ${formatDate(tx.date, true)}</div></td>
+                <td><span class="tag">${escapeHtml(type)}</span></td>
+                <td class="amount-cell"><strong class="${type}">${type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}</strong></td>
+                <td><div class="row-actions"><button class="mini-icon" type="button" onclick="openEditModal(${tx.id})" aria-label="Edit"><span class="material-symbols-outlined">edit</span></button><button class="mini-icon" type="button" onclick="deleteTx(${tx.id})" aria-label="Delete"><span class="material-symbols-outlined">delete</span></button></div></td>
+            </tr>
+        `;
+    }).join('');
 }
 
-function transactionRow(tx, withActions) {
+function transactionListRow(tx) {
     const type = tx.category_type === 'income' ? 'income' : 'expense';
-    const rowClass = withActions ? 'transaction-row' : 'recent-row';
     return `
-        <div class="${rowClass}">
-            <div class="category-avatar" style="background:${tx.category_color || '#7C3AED'}22;">${tx.category_icon || '₹'}</div>
-            <div class="transaction-copy">
-                <strong>${escapeHtml(tx.category_name || 'Uncategorised')}</strong>
-                <span>${escapeHtml(tx.description || 'No description')}</span>
-            </div>
-            <div class="transaction-meta">
-                <div class="transaction-amount ${type}">${formatAmount(tx.amount, type)}</div>
-                <div class="transaction-date">${withActions ? escapeHtml(tx.date) : formatDate(tx.date)}</div>
-            </div>
-            ${withActions ? `
-                <div class="row-actions">
-                    <button class="icon-button" type="button" onclick="openEditModal(${tx.id})" aria-label="Edit transaction">✎</button>
-                    <button class="icon-button danger-button" type="button" onclick="deleteTx(${tx.id}, this)" aria-label="Delete transaction">×</button>
-                </div>
-            ` : ''}
+        <div class="recent-row">
+            <div class="category-avatar" style="color:${tx.category_color || '#fe6b00'}">${tx.category_icon || '₹'}</div>
+            <div class="transaction-copy"><strong>${escapeHtml(tx.category_name || 'Uncategorised')}</strong><div class="transaction-date">${escapeHtml(tx.description || 'No description')} · ${formatDate(tx.date)}</div></div>
+            <strong class="${type}">${type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}</strong>
         </div>
     `;
 }
 
 function renderPagination(result) {
-    const { page, total, limit } = result;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    document.getElementById('pageInfo').textContent = `Page ${page} of ${totalPages}`;
-    document.getElementById('prevPage').disabled = page <= 1;
-    document.getElementById('nextPage').disabled = page >= totalPages;
+    const totalPages = Math.max(1, Math.ceil((result.total || 0) / (result.limit || state.transactionsLimit)));
+    setText('pageInfo', `Page ${result.page || 1} of ${totalPages}`);
+    setDisabled('prevPage', (result.page || 1) <= 1);
+    setDisabled('nextPage', (result.page || 1) >= totalPages);
 }
 
 function changeMonth(direction) {
-    if (monthNavLocked) return;
-    monthNavLocked = true;
-    setTimeout(() => { monthNavLocked = false; }, 300);
-
     const [year, month] = state.currentMonth.split('-').map(Number);
     const next = new Date(year, month - 1 + direction, 1);
     state.currentMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+    budgetMonth = state.currentMonth;
     state.transactionsPage = 1;
-    animateMonthButton(direction > 0 ? 'nextMonth' : 'prevMonth');
-    loadTabData(state.currentTab);
+    debugLog('month changed', state.currentMonth);
+    debouncedRefreshFinancialState({ reason: 'month switch', month: state.currentMonth });
 }
 
 async function loadBudgets() {
-    try {
-        document.getElementById('budgetMonth').textContent = formatMonth(budgetMonth);
-        setSkeleton('budgetCards', 3);
-        const healthData = await fetchBudgetHealth(budgetMonth);
-        renderBudgetCards(healthData);
-    } catch (error) {
-        console.error('Budgets load error:', error);
+    setText('budgetMonth', formatMonth(budgetMonth));
+    if (budgetMonth !== state.currentMonth) {
+        state.currentMonth = budgetMonth;
+        state.transactionsPage = 1;
     }
+    await refreshFinancialState({ reason: 'budget load', month: budgetMonth });
+    renderBudgetCards(state.budgets);
+}
+
+function renderBudgetHero(budgets = []) {
+    const spent = budgets.reduce((sum, item) => sum + Number(item.spent_amount || 0), 0);
+    const limit = budgets.reduce((sum, item) => sum + Number(item.budget_amount || 0), 0);
+    const pct = limit ? Math.round((spent / limit) * 100) : 0;
+    setText('budgetSpentTotal', formatCurrency(spent));
+    setText('budgetLimitTotal', `/ ${formatCurrency(limit)} limit`);
+    setText('budgetUtilized', `${pct}% utilized`);
+    setText('budgetTrendLabel', pct >= 100 ? 'Over budget' : pct >= 80 ? 'Trending high' : 'On track');
+    const fill = document.getElementById('budgetTotalFill');
+    if (fill) fill.style.width = `${Math.min(100, pct)}%`;
+    const risky = state.predictions?.[0];
+    setText('budgetProjectionText', risky ? `${risky.category} may reach ${formatCurrency(risky.predicted_total)} this month.` : 'No high-risk category detected from current data.');
 }
 
 function renderBudgetCards(budgets) {
     const container = document.getElementById('budgetCards');
     if (!container) return;
-
     if (!budgets || budgets.length === 0) {
-        container.innerHTML = emptyState('₹', `No budgets set for ${formatMonth(budgetMonth)}`, 'Set your first budget to stay on track before the month gets away from you.', false);
+        container.innerHTML = emptyState(`No budgets set for ${formatMonth(budgetMonth)}.`);
         return;
     }
-
     container.innerHTML = budgets.map(budget => {
         const spent = Number(budget.spent_amount || 0);
         const cap = Number(budget.budget_amount || 0);
-        const percentage = cap ? (spent / cap) * 100 : 0;
-        const status = percentage >= 100 ? 'Over Budget' : percentage >= 80 ? 'Warning' : 'On Track';
-        const statusClass = percentage >= 100 ? 'status-danger' : percentage >= 80 ? 'status-warning' : 'status-good';
-        const color = percentage >= 100 ? 'var(--color-expense)' : percentage >= 80 ? 'var(--color-warning)' : percentage >= 50 ? '#F97316' : 'var(--color-income)';
-        const overspent = spent > cap ? `<p class="overspent">Overspent by ${formatCurrency(spent - cap)}</p>` : '';
-
-        // Add trend indicator if prediction exists
+        const pct = cap ? Math.round((spent / cap) * 100) : 0;
+        const status = pct >= 100 ? 'Exceeded' : pct >= 80 ? 'Warning' : 'On Track';
+        const statusClass = pct >= 100 ? 'status-danger' : pct >= 80 ? 'status-warning' : 'status-good';
         const prediction = state.predictions.find(p => p.category === budget.category_name);
-        let trendHtml = '';
-        if (prediction) {
-            const isUp = prediction.predicted_total > cap;
-            trendHtml = `<span class="trend-indicator ${isUp ? 'up' : 'stable'}" title="Predicted total: ${formatCurrency(prediction.predicted_total)}">${isUp ? '↑' : '→'}</span>`;
-        }
-
         return `
-            <article class="panel budget-card" data-animate>
-                <div class="budget-top">
-                    <div class="category-avatar" style="background:${budget.category_color || '#7C3AED'}22;">${budget.category_icon || '₹'}</div>
-                    <div style="flex:1">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <h2>${escapeHtml(budget.category_name || 'Budget')}</h2>
-                            ${trendHtml}
-                        </div>
-                        <span class="status-badge ${statusClass}">${status}</span>
-                    </div>
+            <article class="card budget-card">
+                <div class="budget-card-top">
+                    <div class="category-avatar" style="color:${budget.category_color || '#fe6b00'}">${budget.category_icon || '₹'}</div>
+                    <div><h2>${escapeHtml(budget.category_name || 'Budget')}</h2><span class="status-badge ${statusClass}">${status}</span></div>
                 </div>
-                <div class="budget-amounts">
-                    <span>${formatCurrency(spent)}</span>
-                    <span style="color:var(--color-muted)"> / ${formatCurrency(cap)}</span>
-                </div>
-                <div class="progress-track" aria-label="${status}: ${Math.round(percentage)} percent spent">
-                    <div class="progress-fill" style="--progress-color:${color}; width:${Math.min(percentage, 100)}%"></div>
-                </div>
-                ${overspent}
+                <div class="budget-total-line"><strong>${formatCurrency(spent)}</strong><span>/ ${formatCurrency(cap)}</span></div>
+                <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, pct)}%; background:${pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warning)' : 'var(--success)'}"></div></div>
+                ${spent > cap ? `<p class="overspent">Overspent by ${formatCurrency(spent - cap)}</p>` : ''}
+                ${prediction ? `<p class="muted">Predicted end: ${formatCurrency(prediction.predicted_total)}</p>` : ''}
             </article>
         `;
     }).join('');
-
-    withGsap(gsap => gsap.fromTo('#budgetCards .budget-card', { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.35, stagger: 0.06, ease: 'power3.out' }));
 }
 
 function changeBudgetMonth(direction) {
-    if (monthNavLocked) return;
-    monthNavLocked = true;
-    setTimeout(() => { monthNavLocked = false; }, 300);
-
     const [year, month] = budgetMonth.split('-').map(Number);
     const next = new Date(year, month - 1 + direction, 1);
     budgetMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
-    animateMonthButton(direction > 0 ? 'nextBudgetMonth' : 'prevBudgetMonth');
-    loadBudgets();
+    state.currentMonth = budgetMonth;
+    state.transactionsPage = 1;
+    debugLog('budget month changed', budgetMonth);
+    debouncedRefreshFinancialState({ reason: 'budget month switch', month: budgetMonth });
 }
 
 async function loadAnalytics() {
-    try {
-        const [trendData, categoryData] = await Promise.all([
-            fetchTrendData(6),
-            fetchExpenseByCategory(state.currentMonth)
-        ]);
-        window.updateAnalyticsCharts?.(trendData, categoryData);
-        renderTopCategories(categoryData.slice(0, 3));
-    } catch (error) {
-        console.error('Analytics load error:', error);
-    }
+    await refreshFinancialState({ reason: 'analytics load' });
 }
 
 function renderTopCategories(categories) {
     const container = document.getElementById('topCategories');
     const insight = document.getElementById('insightChip');
     if (!container) return;
-
     if (!categories || categories.length === 0) {
-        container.innerHTML = emptyState('₹', 'No spending pattern yet', 'Add expenses this month to surface your top categories.', false);
-        if (insight) insight.textContent = 'No category signal for this month yet';
+        container.innerHTML = emptyState('No spending pattern yet.');
+        setText('insightChip', 'No category signal for this month yet');
         return;
     }
-
     const total = categories.reduce((sum, cat) => sum + Number(cat.total || 0), 0);
-    if (insight) {
-        const top = categories[0];
-        const pct = total ? Math.round((Number(top.total || 0) / total) * 100) : 0;
-        insight.textContent = `${top.icon || '₹'} ${top.name} is ${pct}% of your top tracked spend`;
-    }
-
+    const top = categories[0];
+    const topPct = total ? Math.round((Number(top.total || 0) / total) * 100) : 0;
+    if (insight) insight.textContent = `${top.icon || ''} ${top.name} is ${topPct}% of tracked spend`;
     container.innerHTML = categories.map((cat, index) => {
         const pct = total ? Math.round((Number(cat.total || 0) / total) * 100) : 0;
-        return `
-            <div class="top-category-row">
-                <div class="rank-pill">${index + 1}</div>
-                <div class="category-avatar" style="background:${cat.color || '#7C3AED'}22;">${cat.icon || '₹'}</div>
-                <div class="top-copy" style="flex:1">
-                    <strong>${escapeHtml(cat.name)}</strong>
-                    <span>${pct}% of top categories</span>
-                    <div class="inline-bar"><span style="width:${pct}%; background:${cat.color || 'var(--color-accent)'}"></span></div>
-                </div>
-                <div class="top-amount">${formatCurrency(cat.total)}</div>
-            </div>
-        `;
+        return `<div class="top-category-row"><div class="rank-pill">${index + 1}</div><div class="category-avatar" style="color:${cat.color || '#fe6b00'}">${cat.icon || '₹'}</div><div class="top-copy"><strong>${escapeHtml(cat.name)}</strong><span class="muted">${pct}% of tracked spend</span><div class="inline-bar"><span style="width:${pct}%; background:${cat.color || 'var(--accent)'}"></span></div></div><strong>${formatCurrency(cat.total)}</strong></div>`;
     }).join('');
+}
+
+function renderAnalyticsInsight(categories, trendData) {
+    const top = categories?.[0];
+    if (!top) {
+        setText('analyticsInsight', 'Add more expenses to receive a useful AI-style savings recommendation.');
+        return;
+    }
+    const reduction = Math.max(50, Math.round(Number(top.total || 0) * 0.12));
+    setText('analyticsInsight', `Reducing ${top.name} by ${formatCurrency(reduction)} this month would improve your savings buffer without changing fixed expenses.`);
+}
+
+async function loadNotifications(showErrors = true) {
+    try {
+        state.notifications = await fetchNotifications();
+        renderNotifications(state.notifications);
+        document.getElementById('notificationDot')?.classList.toggle('is-empty', !state.notifications.some(n => !n.is_read));
+    } catch (error) {
+        if (showErrors) throw error;
+    }
+}
+
+function renderNotifications(notifications) {
+    const container = document.getElementById('notificationsList');
+    if (!container) return;
+    if (!notifications || notifications.length === 0) {
+        container.innerHTML = emptyState('No activity notifications yet.');
+        return;
+    }
+    container.innerHTML = notifications.map(item => `
+        <article class="notification-item ${escapeHtml(item.type)}">
+            <span class="material-symbols-outlined">${notificationIcon(item.type)}</span>
+            <div><div class="muted">${escapeHtml(item.type)} · ${formatNotificationDate(item.created_at)}</div><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.message)}</p></div>
+        </article>
+    `).join('');
+}
+
+function notificationIcon(type) {
+    return { danger: 'warning', warning: 'warning', transaction: 'receipt_long', income: 'payments', expense: 'shopping_bag', support: 'support_agent', settings: 'settings', profile: 'person' }[type] || 'notifications';
+}
+
+function formatNotificationDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value || '';
+    return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+async function loadSupport() {
+    const requests = await fetchSupportRequests();
+    state.supportRequests = requests;
+    renderSupportRequests(requests);
+}
+
+function renderSupportRequests(requests) {
+    const container = document.getElementById('supportRequests');
+    if (!container) return;
+    if (!requests || requests.length === 0) {
+        container.innerHTML = emptyState('No support requests yet.');
+        return;
+    }
+    container.innerHTML = requests.map(req => `<div class="notification-item"><span class="material-symbols-outlined">confirmation_number</span><div><h2>#${req.id} ${escapeHtml(req.subject)}</h2><p>${escapeHtml(req.category)} · ${escapeHtml(req.status)} · ${formatNotificationDate(req.created_at)}</p></div></div>`).join('');
+}
+
+async function loadSettingsScreen() {
+    const [settings, cacheStatus] = await Promise.all([fetchSettings(), fetch('/api/cache/status').then(r => r.json()).catch(() => null)]);
+    state.settings = settings;
+    fillSettingsForm(settings);
+    if (cacheStatus) {
+        setText('cacheStatus', `Valkey connected: ${cacheStatus.connected ? 'yes' : 'no'} · Keys: ${cacheStatus.keyCount ?? 0} · Memory: ${cacheStatus.memoryUsed ?? 'unknown'}`);
+    }
+}
+
+function fillSettingsForm(settings) {
+    settings = settings || {};
+    setValue('profileNameInput', state.user.name);
+    setValue('profileEmailInput', state.user.email);
+    setText('settingsProfileName', state.user.name);
+    setText('settingsProfileEmail', state.user.email);
+    setValue('settingTheme', settings.theme || document.documentElement.dataset.theme || 'light');
+    setValue('settingGoal', settings.monthly_goal || 1000);
+    setValue('settingThreshold', settings.alert_threshold || 80);
+    setChecked('settingAI', Boolean(settings.ai_advisor_enabled));
+    setChecked('settingOCR', Boolean(settings.receipt_scan_enabled));
 }
 
 function openTransactionModal(editId = null) {
     const modal = document.getElementById('transactionModal');
-    const title = document.getElementById('modalTitle');
-    if (!modal || !title) return;
-
+    if (!modal) return;
     if (editId) {
-        title.textContent = 'Edit Transaction';
         state.editingTransactionId = editId;
+        setText('modalTitle', 'Edit Transaction');
         loadTransactionForEdit(editId);
     } else {
-        title.textContent = 'Add Transaction';
         state.editingTransactionId = null;
+        setText('modalTitle', 'Add Transaction');
         resetTransactionForm();
     }
-
     modal.classList.remove('hidden');
-    withGsap(gsap => gsap.fromTo(modal.querySelector('.modal-card'), { opacity: 0, scale: 0.94, y: 12 }, { opacity: 1, scale: 1, y: 0, duration: 0.22, ease: 'power3.out' }));
-    setTimeout(() => document.getElementById('category')?.focus(), 50);
 }
 
 function closeTransactionModal() {
-    const modal = document.getElementById('transactionModal');
-    if (!modal || modal.classList.contains('hidden')) return;
-    modal.classList.add('hidden');
+    document.getElementById('transactionModal')?.classList.add('hidden');
     state.editingTransactionId = null;
-    resetTransactionForm();
 }
 
 function resetTransactionForm() {
-    const form = document.getElementById('transactionForm');
-    form?.reset();
+    document.getElementById('transactionForm')?.reset();
     state.transactionType = 'expense';
-    document.getElementById('date').value = new Date().toISOString().slice(0, 10);
+    setValue('date', new Date().toISOString().slice(0, 10));
     updateTypeButtons();
     populateCategorySelect('category');
     updateDescriptionCount();
-    const aiIcon = document.getElementById('ai-suggestion-icon');
-    if (aiIcon) aiIcon.remove();
     document.getElementById('receiptPreviewContainer')?.classList.add('hidden');
-    const receiptInput = document.getElementById('receiptInput');
-    if (receiptInput) receiptInput.value = '';
-}
-
-async function uploadReceipt(file) {
-    const scanBtn = document.getElementById('scanReceiptBtn');
-    const originalContent = scanBtn.innerHTML;
-    
-    try {
-        scanBtn.disabled = true;
-        scanBtn.innerHTML = '<span>⌛</span><span>Processing...</span>';
-        
-        const formData = new FormData();
-        formData.append('receipt', file);
-        
-        const response = await fetch('/api/ocr-receipt', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            const text = await response.text();
-            let errorMsg = 'Server error during scan';
-            try {
-                const errorData = JSON.parse(text);
-                errorMsg = errorData.error || errorMsg;
-            } catch (e) {
-                // If text is HTML, we have our error message from the text fallback
-                if (text.includes('<!DOCTYPE html>') || text.includes('<html>')) {
-                    errorMsg = 'Server returned an HTML error page. Check backend logs.';
-                }
-            }
-            throw new Error(errorMsg);
-        }
-        
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            const text = await response.text();
-            console.error('OCR Non-JSON response:', text.substring(0, 500));
-            throw new Error('Received non-JSON response from server. Possible server crash or misconfiguration.');
-        }
-
-        const result = await response.json();
-        
-        const data = result.data;
-        
-        // Populate fields
-        if (data.amount) document.getElementById('amount').value = data.amount;
-        if (data.merchant_name) document.getElementById('description').value = data.merchant_name;
-        if (data.date) document.getElementById('date').value = data.date;
-        
-        if (data.suggested_category_id) {
-            const category = state.categories.find(c => c.id == data.suggested_category_id);
-            if (category) {
-                state.transactionType = category.type;
-                updateTypeButtons();
-                populateCategorySelect('category');
-            }
-            
-            const categorySelect = document.getElementById('category');
-            if (categorySelect) {
-                categorySelect.value = data.suggested_category_id;
-                
-                // Show AI icon
-                let aiIcon = document.getElementById('ai-suggestion-icon');
-                if (!aiIcon) {
-                    aiIcon = document.createElement('span');
-                    aiIcon.id = 'ai-suggestion-icon';
-                    aiIcon.textContent = ' ✨';
-                    aiIcon.style.fontSize = '1.2em';
-                    aiIcon.title = 'AI Suggested Category';
-                    const label = categorySelect.closest('.field').querySelector('label');
-                    if (label) label.appendChild(aiIcon);
-                }
-            }
-        }
-        
-        // Show preview
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const previewImg = document.getElementById('receiptPreview');
-            const previewContainer = document.getElementById('receiptPreviewContainer');
-            if (previewImg && previewContainer) {
-                previewImg.src = e.target.result;
-                previewContainer.classList.remove('hidden');
-            }
-        };
-        reader.readAsDataURL(file);
-        
-        showToast('Receipt scanned successfully!');
-        updateDescriptionCount();
-        
-    } catch (error) {
-        console.error('OCR Upload error:', error);
-        showToast(error.message || 'Failed to scan receipt', 'error');
-    } finally {
-        scanBtn.disabled = false;
-        scanBtn.innerHTML = originalContent;
-    }
 }
 
 function updateTypeButtons() {
-    document.querySelectorAll('.type-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.type === state.transactionType);
-    });
+    document.querySelectorAll('.type-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.type === state.transactionType));
 }
 
 function populateCategorySelect(selectId) {
     const select = document.getElementById(selectId);
     if (!select) return;
     const type = selectId === 'budgetCategory' ? 'expense' : state.transactionType;
-    const filteredCategories = state.categories.filter(c => c.type === type);
-    select.innerHTML = `
-        <option value="">Select category</option>
-        ${filteredCategories.map(cat => `<option value="${cat.id}">${cat.icon} ${escapeHtml(cat.name)}</option>`).join('')}
-    `;
+    select.innerHTML = '<option value="">Select category</option>' + state.categories.filter(cat => cat.type === type).map(cat => `<option value="${cat.id}">${cat.icon || ''} ${escapeHtml(cat.name)}</option>`).join('');
 }
 
 async function loadTransactionForEdit(id) {
-    try {
-        const result = await fetchTransactions(state.currentMonth, 1, null);
-        const tx = result.transactions.find(t => t.id === id);
-        if (!tx) {
-            showToast('Open the transaction month before editing this item', 'error');
-            return;
-        }
-
-        state.transactionType = tx.category_type;
-        updateTypeButtons();
-        populateCategorySelect('category');
-        document.getElementById('transactionId').value = tx.id;
-        document.getElementById('category').value = tx.category_id;
-        document.getElementById('amount').value = tx.amount;
-        document.getElementById('description').value = tx.description || '';
-        document.getElementById('date').value = tx.date;
-        updateDescriptionCount();
-    } catch (error) {
-        console.error('Error loading transaction:', error);
+    const result = await fetchTransactions(state.currentMonth, 1, null);
+    const tx = result.transactions.find(item => item.id === id);
+    if (!tx) {
+        showToast('Open the transaction month before editing this item', 'error');
+        return;
     }
+    state.transactionType = tx.category_type;
+    updateTypeButtons();
+    populateCategorySelect('category');
+    setValue('transactionId', tx.id);
+    setValue('category', tx.category_id);
+    setValue('amount', tx.amount);
+    setValue('description', tx.description || '');
+    setValue('date', tx.date);
+    updateDescriptionCount();
 }
 
-async function handleTransactionSubmit(e) {
-    e.preventDefault();
+async function handleTransactionSubmit(event) {
+    event.preventDefault();
     const data = {
-        category_id: parseInt(document.getElementById('category').value, 10),
-        amount: parseFloat(document.getElementById('amount').value),
+        category_id: Number(document.getElementById('category').value),
+        amount: Number(document.getElementById('amount').value),
         description: document.getElementById('description').value,
         date: document.getElementById('date').value
     };
-
-    try {
-        if (state.editingTransactionId) {
-            await updateTransaction(state.editingTransactionId, data);
-            showToast('Transaction updated successfully');
-        } else {
-            await createTransaction(data);
-            showToast('Transaction added successfully');
-        }
-        closeTransactionModal();
-        loadTabData(state.currentTab);
-    } catch (error) {
-        // apiCall already reports the error.
+    if (state.editingTransactionId) {
+        await updateTransaction(state.editingTransactionId, data);
+        debugLog('transaction mutation', { action: 'update', id: state.editingTransactionId });
+        showToast('Transaction updated');
+    } else {
+        await createTransaction(data);
+        debugLog('transaction mutation', { action: 'create' });
+        showToast('Transaction added');
     }
+    closeTransactionModal();
+    debouncedRefreshFinancialState({ reason: 'transaction saved' });
+}
+
+async function deleteTx(id) {
+    if (!confirm('Delete this transaction?')) return;
+    await deleteTransaction(id);
+    debugLog('transaction mutation', { action: 'delete', id });
+    showToast('Transaction deleted');
+    debouncedRefreshFinancialState({ reason: 'transaction deleted' });
 }
 
 window.openEditModal = openTransactionModal;
-
-async function deleteTx(id, button = null) {
-    if (button) {
-        withGsap(gsap => gsap.fromTo(button, { x: -4 }, { x: 4, duration: 0.05, repeat: 5, yoyo: true, clearProps: 'x' }));
-    }
-    if (!confirm('Delete this transaction? This will remove it from your rupee trail.')) return;
-
-    try {
-        await deleteTransaction(id);
-        showToast('Transaction deleted');
-        loadTabData(state.currentTab);
-    } catch (error) {
-        // apiCall already reports the error.
-    }
-}
-
 window.deleteTx = deleteTx;
 
 function openBudgetModal() {
-    const modal = document.getElementById('budgetModal');
-    if (!modal) return;
     populateCategorySelect('budgetCategory');
-    document.getElementById('budgetMonthInput').value = budgetMonth;
-    modal.classList.remove('hidden');
-    withGsap(gsap => gsap.fromTo(modal.querySelector('.modal-card'), { opacity: 0, scale: 0.94, y: 12 }, { opacity: 1, scale: 1, y: 0, duration: 0.22, ease: 'power3.out' }));
-    setTimeout(() => document.getElementById('budgetCategory')?.focus(), 50);
+    setValue('budgetMonthInput', budgetMonth);
+    document.getElementById('budgetModal')?.classList.remove('hidden');
 }
 
 function closeBudgetModal() {
-    const modal = document.getElementById('budgetModal');
-    if (!modal || modal.classList.contains('hidden')) return;
-    modal.classList.add('hidden');
+    document.getElementById('budgetModal')?.classList.add('hidden');
     document.getElementById('budgetForm')?.reset();
 }
 
-async function handleBudgetSubmit(e) {
-    e.preventDefault();
-    const data = {
-        category_id: parseInt(document.getElementById('budgetCategory').value, 10),
-        amount: parseFloat(document.getElementById('budgetAmount').value),
+async function handleBudgetSubmit(event) {
+    event.preventDefault();
+    await createBudget({
+        category_id: Number(document.getElementById('budgetCategory').value),
+        amount: Number(document.getElementById('budgetAmount').value),
         month: document.getElementById('budgetMonthInput').value
-    };
+    });
+    debugLog('budget mutation', { action: 'save', month: document.getElementById('budgetMonthInput').value });
+    showToast('Budget saved');
+    closeBudgetModal();
+    debouncedRefreshFinancialState({ reason: 'budget saved', month: budgetMonth });
+}
 
+async function uploadReceipt(file) {
+    const scanBtn = document.getElementById('scanReceiptBtn');
+    const original = scanBtn?.innerHTML;
     try {
-        await createBudget(data);
-        showToast('Budget created successfully');
-        closeBudgetModal();
-        loadBudgets();
-    } catch (error) {
-        // apiCall already reports the error.
-    }
-}
-
-function initScrollAnimations() {
-    const observer = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('visible');
-                observer.unobserve(entry.target);
+        if (scanBtn) {
+            scanBtn.disabled = true;
+            scanBtn.innerHTML = '<span class="material-symbols-outlined">hourglass_top</span>Scanning';
+        }
+        const formData = new FormData();
+        formData.append('receipt', file);
+        const response = await fetch('/api/ocr-receipt', { method: 'POST', body: formData });
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error || 'Receipt scan failed');
+        const data = result.data;
+        if (data.amount) setValue('amount', data.amount);
+        if (data.merchant_name) setValue('description', data.merchant_name);
+        if (data.date) setValue('date', data.date);
+        if (data.suggested_category_id) {
+            const category = state.categories.find(c => c.id == data.suggested_category_id);
+            if (category) {
+                state.transactionType = category.type;
+                updateTypeButtons();
+                populateCategorySelect('category');
+                setValue('category', data.suggested_category_id);
             }
+        }
+        const preview = document.getElementById('receiptPreview');
+        const previewContainer = document.getElementById('receiptPreviewContainer');
+        if (preview && previewContainer) {
+            preview.src = URL.createObjectURL(file);
+            previewContainer.classList.remove('hidden');
+        }
+        updateDescriptionCount();
+        debugLog('receipt OCR import', {
+            amount: data.amount,
+            merchant: data.merchant_name,
+            suggested_category_id: data.suggested_category_id
         });
-    }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
-
-    document.querySelectorAll('[data-animate]').forEach(el => observer.observe(el));
-}
-
-function initFormValidation() {
-    const inputs = document.querySelectorAll('input[required], select[required]');
-    inputs.forEach(input => {
-        const wrapper = input.closest('.field') || input.parentElement;
-        input.addEventListener('input', () => validateInput(input, wrapper));
-        input.addEventListener('blur', () => validateInput(input, wrapper));
-    });
-}
-
-function validateInput(input, wrapper) {
-    let errorEl = wrapper?.querySelector('.error-message');
-    if (!errorEl) {
-        errorEl = document.createElement('div');
-        errorEl.className = 'error-message';
-        wrapper?.appendChild(errorEl);
-    }
-
-    if (input.value && input.checkValidity()) {
-        input.classList.add('input-valid');
-        input.classList.remove('input-invalid');
-        errorEl.textContent = '';
-    } else if (input.value || document.activeElement !== input) {
-        input.classList.toggle('input-invalid', !input.checkValidity());
-        input.classList.remove('input-valid');
-        errorEl.textContent = input.checkValidity() ? '' : input.validationMessage;
+        showToast('Receipt scanned');
+    } catch (error) {
+        showToast(error.message || 'Failed to scan receipt', 'error');
+    } finally {
+        if (scanBtn && original) {
+            scanBtn.disabled = false;
+            scanBtn.innerHTML = original;
+        }
     }
 }
 
-function setSkeleton(containerId, rows = 3) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    container.innerHTML = Array.from({ length: rows }, () => '<div class="skeleton skeleton-row"></div>').join('');
+function openRoastModal() {
+    document.getElementById('roastModal')?.classList.remove('hidden');
+    setText('roastText', 'Loading your financial reality check...');
+    fetchRoast();
 }
 
-function emptyState(icon, title, copy, withCta) {
-    return `
-        <div class="empty-state">
-            <div class="empty-illustration">${icon}</div>
-            <h3>${escapeHtml(title)}</h3>
-            <p>${escapeHtml(copy)}</p>
-            ${withCta ? '<button class="primary-action" type="button" onclick="openEditModal()">Add Transaction</button>' : ''}
-        </div>
-    `;
+function closeRoastModal() {
+    document.getElementById('roastModal')?.classList.add('hidden');
 }
 
-function animateDashboardLoad() {
-    withGsap(gsap => {
-        gsap.fromTo('.summary-grid .metric-card', { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.45, stagger: 0.1, ease: 'power4.out' });
-        gsap.fromTo('.chart-panel canvas', { opacity: 0, scale: 0.96 }, { opacity: 1, scale: 1, duration: 0.35, ease: 'power3.out' });
-    });
-}
-
-function animateMonthButton(id) {
-    withGsap(gsap => gsap.fromTo(`#${id}`, { rotate: -10, scale: 0.95 }, { rotate: 0, scale: 1, duration: 0.25, ease: 'back.out(2)' }));
-}
-
-function updateDescriptionCount() {
-    const input = document.getElementById('description');
-    const counter = document.getElementById('descriptionCount');
-    if (input && counter) counter.textContent = `${input.value.length}/80`;
-}
-
-function initHeaderScrollState() {
-    const header = document.getElementById('appHeader');
-    window.addEventListener('scroll', () => {
-        header?.classList.toggle('is-scrolled', window.scrollY > 8);
-    }, { passive: true });
+async function fetchRoast() {
+    try {
+        if (roastCache[state.currentMonth]) {
+            setText('roastText', roastCache[state.currentMonth]);
+            return;
+        }
+        const data = await apiCall(`/roast?month=${state.currentMonth}`);
+        roastCache[state.currentMonth] = data.roast;
+        setText('roastText', data.roast);
+    } catch (error) {
+        setText('roastText', 'The roast engine needs API credentials before it can judge your spending.');
+    }
 }
 
 function initChatWidget() {
     const widget = document.getElementById('chatWidget');
-    const toggle = document.getElementById('chatToggle');
     const panel = document.getElementById('chatPanel');
-    const close = document.getElementById('closeChat');
     const input = document.getElementById('chatInput');
     const send = document.getElementById('chatSend');
-
-    if (!widget || !toggle || !panel || !input || !send) return;
-
-    const openChat = () => {
-        panel.classList.remove('hidden');
-        widget.classList.add('is-open');
-        toggle.setAttribute('aria-label', 'Close AI Advisor Chat');
-        setTimeout(() => input.focus(), 40);
-        withGsap(gsap => gsap.fromTo(panel, { opacity: 0, y: 18, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.22, ease: 'power3.out' }));
-    };
-
-    const closeChat = () => {
-        panel.classList.add('hidden');
-        widget.classList.remove('is-open');
-        toggle.setAttribute('aria-label', 'Open AI Advisor Chat');
-    };
-
-    toggle.addEventListener('click', () => {
-        if (panel.classList.contains('hidden')) openChat();
-        else closeChat();
+    document.getElementById('chatToggle')?.addEventListener('click', () => toggleChat());
+    document.getElementById('closeChat')?.addEventListener('click', () => toggleChat(false));
+    send?.addEventListener('click', handleChatSubmit);
+    input?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') handleChatSubmit();
     });
-    close?.addEventListener('click', closeChat);
-    send.addEventListener('click', handleChatSubmit);
-    input.addEventListener('keydown', event => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            handleChatSubmit();
-        }
-    });
+    function toggleChat(force) {
+        const shouldOpen = force ?? panel.classList.contains('hidden');
+        panel.classList.toggle('hidden', !shouldOpen);
+        widget.classList.toggle('is-open', shouldOpen);
+        if (shouldOpen) setTimeout(() => input?.focus(), 50);
+    }
+    window.openSmartFinanceChat = () => toggleChat(true);
 }
 
 async function handleChatSubmit() {
     const input = document.getElementById('chatInput');
     const send = document.getElementById('chatSend');
-    if (!input || !send) return;
-
     const message = input.value.trim();
     if (!message) return;
-
     appendChatMessage(message, 'user');
     input.value = '';
     input.disabled = true;
     send.disabled = true;
-
-    const pending = appendChatMessage('Thinking through your rupee trail...', 'assistant', true);
-
+    const pending = appendChatMessage('', 'assistant');
+    const target = pending.querySelector('p');
     try {
-        const target = beginStreamingChatResponse(pending);
         const fullText = await streamChatMessage(message, chunk => {
             target.textContent += chunk;
             scrollChatToBottom();
         });
-        if (!fullText.trim()) {
-            target.textContent = 'I could not generate an answer from the current data.';
-        }
+        if (!fullText.trim()) target.textContent = 'I could not generate an answer from the current data.';
     } catch (error) {
-        renderChatResponse(pending, error.message || 'The AI advisor is unavailable right now. Please try again.');
+        target.textContent = error.message;
     } finally {
         input.disabled = false;
         send.disabled = false;
@@ -1037,44 +995,14 @@ async function handleChatSubmit() {
     }
 }
 
-function appendChatMessage(content, role, pending = false) {
+function appendChatMessage(content, role) {
     const messages = document.getElementById('chatMessages');
-    if (!messages) return null;
-
     const message = document.createElement('div');
-    message.className = `message ${role}${pending ? ' is-pending' : ''}`;
+    message.className = `message ${role}`;
     message.innerHTML = `<p>${escapeHtml(content)}</p>`;
     messages.appendChild(message);
-    messages.scrollTop = messages.scrollHeight;
+    scrollChatToBottom();
     return message;
-}
-
-function renderChatResponse(element, text) {
-    if (!element) return;
-    element.classList.remove('is-pending');
-
-    if (!window.gsap || !hasMotion()) {
-        element.innerHTML = `<p>${escapeHtml(text)}</p>`;
-        document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
-        return;
-    }
-
-    element.innerHTML = '<p></p>';
-    const target = element.querySelector('p');
-    const chars = String(text).split('');
-    let index = 0;
-    const timer = setInterval(() => {
-        target.textContent += chars[index] || '';
-        index += 1;
-        document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
-        if (index >= chars.length) clearInterval(timer);
-    }, 10);
-}
-
-function beginStreamingChatResponse(element) {
-    element.classList.remove('is-pending');
-    element.innerHTML = '<p></p>';
-    return element.querySelector('p');
 }
 
 function scrollChatToBottom() {
@@ -1082,196 +1010,265 @@ function scrollChatToBottom() {
     if (messages) messages.scrollTop = messages.scrollHeight;
 }
 
-const roastCache = {};
-
-function openRoastModal() {
-    const modal = document.getElementById('roastModal');
-    if (!modal) return;
-    modal.classList.remove('hidden');
-    withGsap(gsap => gsap.fromTo(modal.querySelector('.modal-card'), { opacity: 0, scale: 0.94, y: 12 }, { opacity: 1, scale: 1, y: 0, duration: 0.22, ease: 'power3.out' }));
-    
-    document.getElementById('roastText').textContent = 'Loading your financial reality check...';
-    fetchRoast();
+function updateDescriptionCount() {
+    const input = document.getElementById('description');
+    setText('descriptionCount', `${input?.value.length || 0}/80`);
 }
 
-function closeRoastModal() {
-    const modal = document.getElementById('roastModal');
-    if (!modal || modal.classList.contains('hidden')) return;
-    modal.classList.add('hidden');
+function setSkeleton(id, rows = 3) {
+    const container = document.getElementById(id);
+    if (container) container.innerHTML = Array.from({ length: rows }, () => '<div class="skeleton-row"></div>').join('');
 }
 
-async function fetchRoast() {
-    try {
-        if (roastCache[state.currentMonth]) {
-            document.getElementById('roastText').textContent = roastCache[state.currentMonth];
-            return;
-        }
-        const data = await apiCall(`/roast?month=${state.currentMonth}`);
-        roastCache[state.currentMonth] = data.roast;
-        document.getElementById('roastText').textContent = data.roast;
-    } catch (error) {
-        document.getElementById('roastText').textContent = 'Could not generate a roast right now. Maybe you are too broke even for that?';
-    }
+function emptyState(text) {
+    return `<div class="empty-state">${escapeHtml(text)}</div>`;
+}
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+function setValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value ?? '';
+}
+function setChecked(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(value);
+}
+function setDisabled(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = Boolean(value);
 }
 
 async function fetchUser() {
     try {
-        const data = await apiCall('/user');
-        state.user = data;
-        const nameElement = document.querySelector('.user-name');
-        if (nameElement) nameElement.textContent = data.name;
-        
-        // Update avatar seed if it matches the name
-        const avatarImg = document.querySelector('.user-profile-toggle img');
-        if (avatarImg) {
-            avatarImg.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(data.name)}&backgroundColor=7C3AED`;
-        }
+        state.user = await apiCall('/user');
+        updateUserChrome();
     } catch (error) {
-        console.error('Failed to fetch user:', error);
+        console.error(error);
     }
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-    try {
-        initTheme();
-        initScrollAnimations();
-        initFormValidation();
-        initHeaderScrollState();
-        initChatWidget();
+function updateUserChrome() {
+    const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(state.user.name)}&backgroundColor=dde1ff`;
+    ['userAvatar', 'profileMenuAvatar', 'settingsAvatar'].forEach(id => {
+        const img = document.getElementById(id);
+        if (img) img.src = avatar;
+    });
+    setText('profileMenuName', state.user.name);
+    setText('profileMenuEmail', state.user.email);
+    setText('settingsProfileName', state.user.name);
+    setText('settingsProfileEmail', state.user.email);
+}
 
+function updateExpenseBreakdown(categoryName) {
+    state.selectedExpenseCategory = categoryName;
+    const panels = document.querySelectorAll('#expenseBreakdownPanel, [data-expense-breakdown]');
+    if (!panels.length) return;
+
+    const transactions = state.transactions.filter(t => t.type === 'expense' && t.category === categoryName);
+    const total = transactions.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    if (!categoryName || total === 0) {
+        panels.forEach(panel => {
+            panel.classList.add('hidden');
+            panel.innerHTML = '';
+        });
+        return;
+    }
+    const largest = transactions.length ? Math.max(...transactions.map(t => Number(t.amount || 0))) : 0;
+    const totalExpense = Number(state.metrics.total_expense ?? state.metrics.totalExpense ?? 0);
+    const percent = totalExpense ? ((total / totalExpense) * 100).toFixed(1) : '0.0';
+    const html = `
+        <h3>${escapeHtml(categoryName)}</h3>
+        <div class="analytics-stat-grid">
+            <div class="analytics-stat"><label>Total Spent</label><strong>${formatCurrency(total)}</strong></div>
+            <div class="analytics-stat"><label>Expense Share</label><strong>${percent}%</strong></div>
+            <div class="analytics-stat"><label>Largest Transaction</label><strong>${formatCurrency(largest)}</strong></div>
+        </div>
+    `;
+    panels.forEach(panel => {
+        panel.classList.remove('hidden');
+        panel.innerHTML = html;
+    });
+    debugLog('expense breakdown update', { categoryName, count: transactions.length, total });
+}
+
+function seedAnimateTargets() {
+    document.querySelectorAll('.screen .card, .screen .support-card, .screen .watch-card, .screen .page-heading, .screen .budget-hero, .screen .support-hero').forEach(el => {
+        el.setAttribute('data-animate', '');
+    });
+}
+
+function runScreenAnimations() {
+    if (!window.gsap || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const targets = document.querySelectorAll('.screen.active [data-animate]');
+    if (!targets.length) return;
+    gsap.fromTo(targets, { opacity: 0, y: 12, scale: 0.99 }, {
+        opacity: 1,
+        y: 0,
+        scale: 1,
+        duration: 0.3,
+        ease: 'power3.out',
+        stagger: { amount: 0.15, from: 'start' },
+        delay: 0.02
+    });
+}
+
+window.updateExpenseBreakdown = updateExpenseBreakdown;
+window.refreshFinancialState = refreshFinancialState;
+
+function bindEvents() {
+    document.querySelectorAll('[data-tab]').forEach(el => el.addEventListener('click', () => switchTab(el.dataset.tab)));
+    document.getElementById('profileToggle')?.addEventListener('click', () => {
+        const menu = document.getElementById('profileMenu');
+        menu.classList.toggle('hidden');
+        document.getElementById('profileToggle').setAttribute('aria-expanded', String(!menu.classList.contains('hidden')));
+    });
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.profile-trigger') && !event.target.closest('.profile-menu')) {
+            document.getElementById('profileMenu')?.classList.add('hidden');
+        }
+    });
+    document.getElementById('themeToggle')?.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+    document.getElementById('globalSearchBtn')?.addEventListener('click', () => { switchTab('transactions'); setTimeout(() => document.getElementById('transactionSearch')?.focus(), 80); });
+    ['addTransactionBtn', 'addTransactionBtnLedger'].forEach(id => document.getElementById(id)?.addEventListener('click', () => openTransactionModal()));
+    document.getElementById('scanFromLedgerBtn')?.addEventListener('click', () => { openTransactionModal(); setTimeout(() => document.getElementById('receiptInput')?.click(), 80); });
+    document.getElementById('prevMonth')?.addEventListener('click', () => changeMonth(-1));
+    document.getElementById('nextMonth')?.addEventListener('click', () => changeMonth(1));
+    document.getElementById('prevPage')?.addEventListener('click', () => { if (state.transactionsPage > 1) { state.transactionsPage--; loadTransactions(); } });
+    document.getElementById('nextPage')?.addEventListener('click', () => { state.transactionsPage++; loadTransactions(); });
+    document.getElementById('transactionSearch')?.addEventListener('input', event => { state.searchQuery = event.target.value.trim(); loadTransactions(); });
+    document.getElementById('refreshAlertsBtn')?.addEventListener('click', () => loadPredictiveAlerts(true));
+    document.getElementById('analyzeBurnBtn')?.addEventListener('click', () => loadPredictiveAlerts(true));
+    document.getElementById('prevBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(-1));
+    document.getElementById('nextBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(1));
+    document.getElementById('addBudgetBtn')?.addEventListener('click', openBudgetModal);
+    document.getElementById('closeBudgetModal')?.addEventListener('click', closeBudgetModal);
+    document.getElementById('cancelBudgetBtn')?.addEventListener('click', closeBudgetModal);
+    document.getElementById('budgetForm')?.addEventListener('submit', handleBudgetSubmit);
+    ['roastMeBtn', 'roastMeBtnAlt'].forEach(id => document.getElementById(id)?.addEventListener('click', openRoastModal));
+    document.getElementById('closeRoastModal')?.addEventListener('click', closeRoastModal);
+    document.getElementById('closeRoastBtn')?.addEventListener('click', closeRoastModal);
+    document.getElementById('openChatShortcut')?.addEventListener('click', () => window.openSmartFinanceChat?.());
+    document.getElementById('supportChatBtn')?.addEventListener('click', () => window.openSmartFinanceChat?.());
+    document.getElementById('closeModal')?.addEventListener('click', closeTransactionModal);
+    document.getElementById('cancelBtn')?.addEventListener('click', closeTransactionModal);
+    document.getElementById('transactionForm')?.addEventListener('submit', handleTransactionSubmit);
+    document.getElementById('scanReceiptBtn')?.addEventListener('click', () => document.getElementById('receiptInput')?.click());
+    document.getElementById('receiptInput')?.addEventListener('change', event => { if (event.target.files[0]) uploadReceipt(event.target.files[0]); });
+    document.getElementById('removeReceiptBtn')?.addEventListener('click', () => { document.getElementById('receiptPreviewContainer')?.classList.add('hidden'); setValue('receiptInput', ''); });
+    document.querySelectorAll('.type-btn').forEach(btn => btn.addEventListener('click', () => { state.transactionType = btn.dataset.type; updateTypeButtons(); populateCategorySelect('category'); }));
+    document.getElementById('description')?.addEventListener('input', handleDescriptionInput);
+    document.getElementById('markReadBtn')?.addEventListener('click', async () => {
+        await markNotificationsRead();
+        showToast('Notifications marked as read');
+        debouncedRefreshFinancialState({ reason: 'notifications read' });
+    });
+    document.getElementById('supportForm')?.addEventListener('submit', handleSupportSubmit);
+    document.getElementById('profileForm')?.addEventListener('submit', handleProfileSubmit);
+    document.getElementById('settingsForm')?.addEventListener('submit', handleSettingsSubmit);
+    document.getElementById('flushCacheBtn')?.addEventListener('click', handleFlushCache);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeTransactionModal(); closeBudgetModal(); closeRoastModal(); } });
+}
+
+let suggestionTimeout;
+function handleDescriptionInput(event) {
+    updateDescriptionCount();
+    const description = event.target.value.trim();
+    if (description.length < 3) return;
+    clearTimeout(suggestionTimeout);
+    suggestionTimeout = setTimeout(async () => {
+        try {
+            const result = await apiCall('/suggest-category', { method: 'POST', body: JSON.stringify({ description, type: state.transactionType }) });
+            debugLog('AI category suggestion', result);
+            if (result.category_id) setValue('category', result.category_id);
+        } catch (error) {
+            console.info('AI category suggestion unavailable:', error.message);
+        }
+    }, 500);
+}
+
+async function handleSupportSubmit(event) {
+    event.preventDefault();
+    await createSupportRequest({
+        subject: document.getElementById('supportSubject').value,
+        category: document.getElementById('supportCategory').value,
+        message: document.getElementById('supportMessage').value
+    });
+    event.target.reset();
+    debugLog('support mutation', { action: 'create' });
+    showToast('Support request submitted');
+    debouncedRefreshFinancialState({ reason: 'support request', includeSupport: true });
+}
+
+async function handleProfileSubmit(event) {
+    event.preventDefault();
+    state.user = await updateUserApi({
+        name: document.getElementById('profileNameInput').value,
+        email: document.getElementById('profileEmailInput').value
+    });
+    updateUserChrome();
+    debugLog('profile mutation', { action: 'update' });
+    showToast('Profile saved');
+    debouncedRefreshFinancialState({ reason: 'profile saved', includeSettings: true });
+}
+
+async function handleSettingsSubmit(event) {
+    event.preventDefault();
+    const settings = await updateSettingsApi({
+        theme: document.getElementById('settingTheme').value,
+        monthly_goal: Number(document.getElementById('settingGoal').value),
+        alert_threshold: Number(document.getElementById('settingThreshold').value),
+        ai_advisor_enabled: document.getElementById('settingAI').checked,
+        receipt_scan_enabled: document.getElementById('settingOCR').checked
+    });
+    state.settings = settings;
+    applyTheme(settings.theme);
+    debugLog('settings mutation', { action: 'update', theme: settings.theme });
+    showToast('Settings saved');
+    debouncedRefreshFinancialState({ reason: 'settings saved', includeSettings: true });
+}
+
+async function handleFlushCache() {
+    const result = await fetch('/api/cache/flush', { method: 'POST' }).then(r => r.json());
+    debugLog('cache invalidation', result);
+    showToast(`Cache flushed: ${result.deletedCount || 0} keys`);
+    debouncedRefreshFinancialState({ reason: 'cache flush', includeSettings: true, includeSupport: state.currentTab === 'support' });
+}
+
+async function bootSmartFinance() {
+    try {
+        document.documentElement.dataset.sfAppBoot = 'starting';
+        seedAnimateTargets();
+        bindEvents();
+        initChatWidget();
+        applyTheme(localStorage.getItem('sf-theme') || 'light', false);
         await fetchUser();
         state.categories = await fetchCategories();
         window.initializeCharts?.();
-
-        document.querySelectorAll('.nav-tab, .mobile-nav-tab').forEach(tab => {
-            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
-        });
-
-        document.querySelectorAll('.view-all-btn').forEach(btn => {
-            btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-        });
-
-        document.getElementById('addTransactionBtn')?.addEventListener('click', () => openTransactionModal());
-        document.getElementById('prevMonth')?.addEventListener('click', () => changeMonth(-1));
-        document.getElementById('nextMonth')?.addEventListener('click', () => changeMonth(1));
-        document.getElementById('prevPage')?.addEventListener('click', () => {
-            if (state.transactionsPage > 1) {
-                state.transactionsPage--;
-                loadTransactions();
-            }
-        });
-        document.getElementById('nextPage')?.addEventListener('click', () => {
-            state.transactionsPage++;
-            loadTransactions();
-        });
-        document.getElementById('prevBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(-1));
-        document.getElementById('nextBudgetMonth')?.addEventListener('click', () => changeBudgetMonth(1));
-        document.getElementById('addBudgetBtn')?.addEventListener('click', openBudgetModal);
-        document.getElementById('roastMeBtn')?.addEventListener('click', openRoastModal);
-        document.getElementById('refreshAlertsBtn')?.addEventListener('click', () => loadPredictiveAlerts(true));
-        document.getElementById('closeRoastModal')?.addEventListener('click', closeRoastModal);
-        document.getElementById('closeRoastBtn')?.addEventListener('click', closeRoastModal);
-
-        document.getElementById('closeModal')?.addEventListener('click', closeTransactionModal);
-        document.getElementById('cancelBtn')?.addEventListener('click', closeTransactionModal);
-        document.getElementById('transactionForm')?.addEventListener('submit', handleTransactionSubmit);
-        let suggestionTimeout;
-        const descriptionInput = document.getElementById('description');
-        descriptionInput?.addEventListener('input', (e) => {
-            updateDescriptionCount();
-            const description = e.target.value.trim();
-            if (description.length < 3) return;
-
-            clearTimeout(suggestionTimeout);
-            suggestionTimeout = setTimeout(async () => {
-                try {
-                    const response = await fetch('/api/suggest-category', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            description,
-                            type: state.transactionType
-                        })
-                    });
-                    const result = await response.json();
-                    if (result.success && result.data.category_id) {
-                        const categorySelect = document.getElementById('category');
-                        if (categorySelect) {
-                            categorySelect.value = result.data.category_id;
-                            
-                            let aiIcon = document.getElementById('ai-suggestion-icon');
-                            if (!aiIcon) {
-                                aiIcon = document.createElement('span');
-                                aiIcon.id = 'ai-suggestion-icon';
-                                aiIcon.textContent = ' ✨';
-                                aiIcon.style.fontSize = '1.2em';
-                                aiIcon.title = 'AI Suggested Category';
-                                
-                                const label = categorySelect.closest('.field').querySelector('label');
-                                if (label) label.appendChild(aiIcon);
-                            }
-                            
-                            const clearAIIcon = () => {
-                                const icon = document.getElementById('ai-suggestion-icon');
-                                if (icon) icon.remove();
-                                categorySelect.removeEventListener('change', clearAIIcon);
-                            };
-                            categorySelect.addEventListener('change', clearAIIcon);
-                        }
-                    }
-                } catch (error) {
-                    console.error('Suggestion failed', error);
-                }
-            }, 500);
-        });
-
-        document.querySelectorAll('.type-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                state.transactionType = btn.dataset.type;
-                updateTypeButtons();
-                populateCategorySelect('category');
-            });
-        });
-
-        document.getElementById('closeBudgetModal')?.addEventListener('click', closeBudgetModal);
-        document.getElementById('cancelBudgetBtn')?.addEventListener('click', closeBudgetModal);
-        document.getElementById('budgetForm')?.addEventListener('submit', handleBudgetSubmit);
-
-        document.getElementById('transactionModal')?.addEventListener('click', e => {
-            if (e.target.id === 'transactionModal') closeTransactionModal();
-        });
-        document.getElementById('budgetModal')?.addEventListener('click', e => {
-            if (e.target.id === 'budgetModal') closeBudgetModal();
-        });
-        document.getElementById('roastModal')?.addEventListener('click', e => {
-            if (e.target.id === 'roastModal') closeRoastModal();
-        });
-        document.getElementById('scanReceiptBtn')?.addEventListener('click', () => {
-            document.getElementById('receiptInput')?.click();
-        });
-
-        document.getElementById('receiptInput')?.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) uploadReceipt(file);
-        });
-
-        document.getElementById('removeReceiptBtn')?.addEventListener('click', () => {
-            document.getElementById('receiptPreviewContainer')?.classList.add('hidden');
-            const receiptInput = document.getElementById('receiptInput');
-            if (receiptInput) receiptInput.value = '';
-        });
-
-        document.addEventListener('keydown', e => {
-            if (e.key === 'Escape') {
-                closeTransactionModal();
-                closeBudgetModal();
-                closeRoastModal();
-            }
-        });
-
+        state.settings = await fetchSettings().catch(() => null);
+        if (state.settings?.theme) applyTheme(state.settings.theme, false);
         await loadDashboard();
+        runScreenAnimations();
+        document.documentElement.dataset.sfAppBoot = 'ready';
     } catch (error) {
+        document.documentElement.dataset.sfAppBoot = 'failed';
+        document.documentElement.dataset.sfBootError = error.message || 'unknown error';
         console.error('Initialization error:', error);
-        showToast('Failed to initialize app', 'error');
+        showToast(error.message || 'Failed to initialize app', 'error');
     }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootSmartFinance, { once: true });
+} else {
+    bootSmartFinance();
+}
+
+document.addEventListener('mousemove', e => {
+    const pct = (v, max) => `${((v / max) * 100).toFixed(1)}%`;
+    document.body.style.setProperty('--mx', pct(e.clientX, window.innerWidth));
+    document.body.style.setProperty('--my', pct(e.clientY, window.innerHeight));
 });

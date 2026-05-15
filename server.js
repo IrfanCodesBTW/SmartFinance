@@ -42,6 +42,18 @@ function apiResponse(res, success, data = null, error = null) {
     }
 }
 
+async function safeSetCache(cacheKey, value, ttlSeconds) {
+    await valkey.setCache(cacheKey, value, ttlSeconds).catch(error => {
+        console.warn('[Cache set skipped]', cacheKey, error.message);
+    });
+}
+
+async function safeFlushTag(tag) {
+    await valkey.flushTag(tag).catch(error => {
+        console.warn('[Cache invalidation skipped]', tag, error.message);
+    });
+}
+
 function getCurrentMonth() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -52,10 +64,19 @@ function buildFinanceAdvisorPrompt({ month, summary, trend, breakdown, userName 
 Their financial data this month (${month}): ${JSON.stringify(summary)}
 Category breakdown: ${JSON.stringify(breakdown)}
 Six-month trend: ${JSON.stringify(trend)}
-Answer concisely. Use ₹ for amounts. Be practical.
+Answer concisely. Use Rs. for amounts. Be practical.
 Always refer to the user as ${userName}, but you MUST also use creative, finance-themed nicknames occasionally (like "Budget Boss ${userName}" or "Chai-Expert ${userName}").
 If the user asks about a category, use the category names and totals from the JSON.
 Do not invent transactions or amounts that are not present in the data.`;
+}
+
+function createActivityNotification(type, title, message) {
+    try {
+        return database.createNotification({ user_id: 1, type, title, message });
+    } catch (error) {
+        console.error('Notification create error:', error);
+        return null;
+    }
 }
 
 // ============================================
@@ -70,6 +91,128 @@ app.get('/api/user', async (req, res) => {
         } else {
             apiResponse(res, false, null, 'User not found');
         }
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.put('/api/user', async (req, res) => {
+    try {
+        const { name, email } = req.body;
+        if (!name || !email) {
+            return apiResponse(res, false, null, 'name and email are required');
+        }
+
+        const user = database.updateUser(1, { name: name.trim(), email: email.trim() });
+        createActivityNotification('profile', 'Profile updated', `${user.name}'s profile details were saved.`);
+        apiResponse(res, true, user);
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.get('/api/settings', async (req, res) => {
+    try {
+        apiResponse(res, true, database.getSettings(1));
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.put('/api/settings', async (req, res) => {
+    try {
+        const { theme, currency, monthly_goal, alert_threshold, ai_advisor_enabled, receipt_scan_enabled } = req.body;
+        if (theme && !['light', 'dark', 'system'].includes(theme)) {
+            return apiResponse(res, false, null, 'theme must be light, dark, or system');
+        }
+
+        const settings = database.updateSettings(1, {
+            theme,
+            currency,
+            monthly_goal,
+            alert_threshold,
+            ai_advisor_enabled,
+            receipt_scan_enabled
+        });
+
+        createActivityNotification('settings', 'Settings saved', 'System settings were updated successfully.');
+        apiResponse(res, true, settings);
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.get('/api/notifications', async (req, res) => {
+    try {
+        const month = req.query.month || getCurrentMonth();
+        const stored = database.getStoredNotifications(1, 30).map(item => ({
+            id: `stored-${item.id}`,
+            source_id: item.id,
+            type: item.type,
+            title: item.title,
+            message: item.message,
+            is_read: Boolean(item.is_read),
+            created_at: item.created_at
+        }));
+
+        const budgetAlerts = database.getBudgetHealth(month)
+            .filter(item => ['critical', 'exceeded'].includes(item.status))
+            .map(item => ({
+                id: `budget-${item.budget_id}`,
+                type: item.status === 'exceeded' ? 'danger' : 'warning',
+                title: item.status === 'exceeded' ? `${item.category_name} is over budget` : `${item.category_name} is near the limit`,
+                message: `${item.category_name}: Rs. ${Math.round(item.spent_amount)} spent of Rs. ${Math.round(item.budget_amount)} for ${month}.`,
+                is_read: false,
+                created_at: new Date().toISOString()
+            }));
+
+        const recent = database.getRecentTransactions(5).map(item => ({
+            id: `transaction-${item.id}`,
+            type: item.category_type === 'income' ? 'income' : 'expense',
+            title: item.category_type === 'income' ? 'Income recorded' : 'Expense recorded',
+            message: `${item.category_name}: Rs. ${Math.round(item.amount)}${item.description ? ` for ${item.description}` : ''}.`,
+            is_read: true,
+            created_at: item.created_at || item.date
+        }));
+
+        apiResponse(res, true, [...budgetAlerts, ...stored, ...recent]);
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.post('/api/notifications/read', async (req, res) => {
+    try {
+        database.markNotificationsRead(1);
+        apiResponse(res, true, { read: true });
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.get('/api/support', async (req, res) => {
+    try {
+        apiResponse(res, true, database.getSupportRequests(1));
+    } catch (error) {
+        apiResponse(res, false, null, error.message);
+    }
+});
+
+app.post('/api/support', async (req, res) => {
+    try {
+        const { subject, category, message } = req.body;
+        if (!subject || !message) {
+            return apiResponse(res, false, null, 'subject and message are required');
+        }
+
+        const request = database.createSupportRequest({
+            user_id: 1,
+            subject: subject.trim(),
+            category: category || 'General',
+            message: message.trim()
+        });
+        createActivityNotification('support', 'Support request submitted', `Ticket #${request.id} was created for ${request.category}.`);
+        apiResponse(res, true, request);
     } catch (error) {
         apiResponse(res, false, null, error.message);
     }
@@ -131,7 +274,7 @@ app.get('/api/categories', async (req, res) => {
         }
 
         const categories = database.getAllCategories();
-        await valkey.setCache(cacheKey, categories, 3600);
+        await safeSetCache(cacheKey, categories, 3600);
         apiResponse(res, true, categories);
     } catch (error) {
         const categories = database.getAllCategories();
@@ -184,7 +327,7 @@ Return ONLY the most likely category name. No explanation.`;
 app.get('/api/transactions', async (req, res) => {
     try {
         const { month, category_id, page, limit } = req.query;
-        const cacheKey = `sf:transactions:${month || 'all'}:${page || 1}:${category_id || 'all'}`;
+        const cacheKey = `sf:transactions:${month || 'all'}:${page || 1}:${limit || 10}:${category_id || 'all'}`;
 
         const cached = await valkey.getCache(cacheKey);
         if (cached) {
@@ -198,7 +341,7 @@ app.get('/api/transactions', async (req, res) => {
             limit: parseInt(limit) || 10
         });
 
-        await valkey.setCache(cacheKey, result, 120);
+        await safeSetCache(cacheKey, result, 120);
         apiResponse(res, true, result);
     } catch (error) {
         const result = database.getTransactions({
@@ -232,15 +375,20 @@ app.post('/api/transactions', async (req, res) => {
         });
 
         // Invalidate related caches
-        await valkey.flushTag('transactions');
-        await valkey.flushTag('summary');
-        await valkey.flushTag('recent');
-        await valkey.flushTag('breakdown');
-        await valkey.flushTag('expense-cat');
-        await valkey.flushTag('trend');
-        await valkey.flushTag('budget-health');
-        await valkey.flushTag('ai');
+        await safeFlushTag('transactions');
+        await safeFlushTag('summary');
+        await safeFlushTag('recent');
+        await safeFlushTag('breakdown');
+        await safeFlushTag('expense-cat');
+        await safeFlushTag('trend');
+        await safeFlushTag('budget-health');
+        await safeFlushTag('ai');
 
+        createActivityNotification(
+            'transaction',
+            'Transaction added',
+            `Rs. ${Math.round(amount)} was recorded for ${date}.`
+        );
         apiResponse(res, true, transaction);
     } catch (error) {
         apiResponse(res, false, null, error.message);
@@ -265,15 +413,20 @@ app.put('/api/transactions/:id', async (req, res) => {
 
         if (updated) {
             // Invalidate related caches
-            await valkey.flushTag('transactions');
-            await valkey.flushTag('summary');
-            await valkey.flushTag('recent');
-            await valkey.flushTag('breakdown');
-            await valkey.flushTag('expense-cat');
-            await valkey.flushTag('trend');
-            await valkey.flushTag('budget-health');
-            await valkey.flushTag('ai');
+            await safeFlushTag('transactions');
+            await safeFlushTag('summary');
+            await safeFlushTag('recent');
+            await safeFlushTag('breakdown');
+            await safeFlushTag('expense-cat');
+            await safeFlushTag('trend');
+            await safeFlushTag('budget-health');
+            await safeFlushTag('ai');
 
+            createActivityNotification(
+                'transaction',
+                'Transaction updated',
+                `Transaction #${id} was updated.`
+            );
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Transaction not found');
@@ -290,15 +443,20 @@ app.delete('/api/transactions/:id', async (req, res) => {
 
         if (deleted) {
             // Invalidate related caches
-            await valkey.flushTag('transactions');
-            await valkey.flushTag('summary');
-            await valkey.flushTag('recent');
-            await valkey.flushTag('breakdown');
-            await valkey.flushTag('expense-cat');
-            await valkey.flushTag('trend');
-            await valkey.flushTag('budget-health');
-            await valkey.flushTag('ai');
+            await safeFlushTag('transactions');
+            await safeFlushTag('summary');
+            await safeFlushTag('recent');
+            await safeFlushTag('breakdown');
+            await safeFlushTag('expense-cat');
+            await safeFlushTag('trend');
+            await safeFlushTag('budget-health');
+            await safeFlushTag('ai');
 
+            createActivityNotification(
+                'transaction',
+                'Transaction deleted',
+                `Transaction #${id} was removed.`
+            );
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Transaction not found');
@@ -328,7 +486,7 @@ app.get('/api/summary', async (req, res) => {
         const summary = database.getMonthlySummary(month);
         const result = summary || { month, total_income: 0, total_expense: 0, savings: 0 };
 
-        await valkey.setCache(cacheKey, result, 300);
+        await safeSetCache(cacheKey, result, 300);
         apiResponse(res, true, result);
     } catch (error) {
         const { month } = req.query;
@@ -348,7 +506,7 @@ app.get('/api/recent-transactions', async (req, res) => {
         }
 
         const transactions = database.getRecentTransactions(limit);
-        await valkey.setCache(cacheKey, transactions, 60);
+        await safeSetCache(cacheKey, transactions, 60);
         apiResponse(res, true, transactions);
     } catch (error) {
         const limit = parseInt(req.query.limit) || 5;
@@ -372,7 +530,7 @@ app.get('/api/budgets', async (req, res) => {
         }
 
         const budgets = database.getBudgets(month);
-        await valkey.setCache(cacheKey, budgets, 300);
+        await safeSetCache(cacheKey, budgets, 300);
         apiResponse(res, true, budgets);
     } catch (error) {
         const budgets = database.getBudgets(req.query.month);
@@ -396,9 +554,14 @@ app.post('/api/budgets', async (req, res) => {
         });
 
         // Invalidate related caches
-        await valkey.flushTag('budgets');
-        await valkey.flushTag('budget-health');
+        await safeFlushTag('budgets');
+        await safeFlushTag('budget-health');
 
+        createActivityNotification(
+            'budget',
+            'Budget saved',
+            `Budget of Rs. ${Math.round(amount)} was saved for ${month}.`
+        );
         apiResponse(res, true, budget);
     } catch (error) {
         apiResponse(res, false, null, error.message);
@@ -412,9 +575,14 @@ app.delete('/api/budgets/:id', async (req, res) => {
 
         if (deleted) {
             // Invalidate related caches
-            await valkey.flushTag('budgets');
-            await valkey.flushTag('budget-health');
+            await safeFlushTag('budgets');
+            await safeFlushTag('budget-health');
 
+            createActivityNotification(
+                'budget',
+                'Budget deleted',
+                `Budget #${id} was removed.`
+            );
             apiResponse(res, true, { id: parseInt(id) });
         } else {
             apiResponse(res, false, null, 'Budget not found');
@@ -439,7 +607,7 @@ app.get('/api/budget-health', async (req, res) => {
         }
 
         const health = database.getBudgetHealth(month);
-        await valkey.setCache(cacheKey, health, 180);
+        await safeSetCache(cacheKey, health, 180);
         apiResponse(res, true, health);
     } catch (error) {
         const health = database.getBudgetHealth(req.query.month);
@@ -464,7 +632,7 @@ app.get('/api/trend', async (req, res) => {
         const trend = database.getTrendData(parseInt(months) || 6);
         const result = trend.reverse();
 
-        await valkey.setCache(cacheKey, result, 600);
+        await safeSetCache(cacheKey, result, 600);
         apiResponse(res, true, result);
     } catch (error) {
         const trend = database.getTrendData(parseInt(req.query.months) || 6);
@@ -486,7 +654,7 @@ app.get('/api/category-breakdown', async (req, res) => {
         }
 
         const breakdown = database.getCategoryBreakdown(month);
-        await valkey.setCache(cacheKey, breakdown, 300);
+        await safeSetCache(cacheKey, breakdown, 300);
         apiResponse(res, true, breakdown);
     } catch (error) {
         const breakdown = database.getCategoryBreakdown(req.query.month);
@@ -508,7 +676,7 @@ app.get('/api/expense-by-category', async (req, res) => {
         }
 
         const expenses = database.getExpenseByCategory(month);
-        await valkey.setCache(cacheKey, expenses, 300);
+        await safeSetCache(cacheKey, expenses, 300);
         apiResponse(res, true, expenses);
     } catch (error) {
         const expenses = database.getExpenseByCategory(req.query.month);
@@ -563,7 +731,7 @@ Rules for the roast:
         const roast = completion.choices[0].message.content.trim();
         const result = { roast, month };
 
-        await valkey.setCache(cacheKey, result, 86400);
+        await safeSetCache(cacheKey, result, 86400);
         apiResponse(res, true, result);
     } catch (error) {
         console.error('Roast error:', error);
@@ -631,7 +799,7 @@ Rules:
                      Object.values(prediction).find(val => Array.isArray(val)) || [];
         }
 
-        await valkey.setCache(cacheKey, alerts, 86400);
+        await safeSetCache(cacheKey, alerts, 86400);
         apiResponse(res, true, alerts);
     } catch (error) {
         console.error('Prediction error:', error);
@@ -724,7 +892,7 @@ app.post('/api/chat', async (req, res) => {
                 { role: 'user', content: message.trim() }, 
                 { role: 'assistant', content: fullAnswer }
             ].slice(-10); // Keep last 10 messages for memory
-            await valkey.setCache(historyKey, newHistory, 1800); // 30 min TTL
+            await safeSetCache(historyKey, newHistory, 1800); // 30 min TTL
 
             return res.end();
         }
@@ -737,7 +905,7 @@ app.post('/api/chat', async (req, res) => {
             { role: 'user', content: message.trim() }, 
             { role: 'assistant', content: answer }
         ].slice(-10);
-        await valkey.setCache(historyKey, newHistory, 1800);
+        await safeSetCache(historyKey, newHistory, 1800);
 
         apiResponse(res, true, {
             answer: answer || 'I could not generate an answer from the current financial data.',
@@ -833,7 +1001,7 @@ app.get('/api/recurring', async (req, res) => {
         }
 
         const recurring = database.getRecurringTransactions();
-        await valkey.setCache(cacheKey, recurring, 300);
+        await safeSetCache(cacheKey, recurring, 300);
         apiResponse(res, true, recurring);
     } catch (error) {
         const recurring = database.getRecurringTransactions();
@@ -859,7 +1027,7 @@ app.post('/api/recurring', async (req, res) => {
         });
 
         // Invalidate related caches
-        await valkey.flushTag('recurring');
+        await safeFlushTag('recurring');
 
         apiResponse(res, true, recurring);
     } catch (error) {
@@ -874,7 +1042,7 @@ app.delete('/api/recurring/:id', async (req, res) => {
 
         if (deleted) {
             // Invalidate related caches
-            await valkey.flushTag('recurring');
+            await safeFlushTag('recurring');
 
             apiResponse(res, true, { id: parseInt(id) });
         } else {
