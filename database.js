@@ -3,7 +3,20 @@ const fs = require('fs');
 const path = require('path');
 
 let db = null;
-const dbPath = path.join(__dirname, 'smartfinance.db');
+
+// Railway recommends using /data for persistent volumes
+const isProd = process.env.NODE_ENV === 'production';
+const dbFolder = isProd ? '/data' : __dirname;
+const dbPath = path.join(dbFolder, 'smartfinance.db');
+
+// Ensure data directory exists in production if using volume
+if (isProd && !fs.existsSync(dbFolder)) {
+    try {
+        fs.mkdirSync(dbFolder, { recursive: true });
+    } catch (err) {
+        console.warn(`[Database] Could not create ${dbFolder}, falling back to local`, err.message);
+    }
+}
 
 // ============================================
 // Database Initialization
@@ -11,33 +24,38 @@ const dbPath = path.join(__dirname, 'smartfinance.db');
 
 async function initializeDatabase() {
     const SQL = await initSqlJs();
+    const dbExists = fs.existsSync(dbPath);
 
     // Load existing database or create new one
-    if (fs.existsSync(dbPath)) {
+    if (dbExists) {
         const fileBuffer = fs.readFileSync(dbPath);
         db = new SQL.Database(fileBuffer);
+        console.log(`[Database] Loaded existing DB from ${dbPath}`);
     } else {
         db = new SQL.Database();
+        console.log('[Database] Created new in-memory DB');
     }
 
-    // Run schema
-    const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-    db.exec(schema);
-
-    // Run seed data only if the database is empty (no transactions)
-    const existing = db.exec('SELECT COUNT(*) as cnt FROM transactions');
-    const hasData = existing?.[0]?.values?.[0]?.[0] > 0;
-    if (!hasData) {
-        const seed = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
-        db.exec(seed);
-        console.log('Database seeded with initial data');
-    } else {
-        console.log('Database already has data, skipping seed');
+    // Always run schema (should be idempotent with IF NOT EXISTS)
+    const schemaPath = path.join(__dirname, 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+        const schema = fs.readFileSync(schemaPath, 'utf8');
+        db.exec(schema);
+        console.log('[Database] Schema applied');
     }
 
-    // Save to file
+    // Run seed data ONLY if this is a fresh database
+    if (!dbExists) {
+        const seedPath = path.join(__dirname, 'seed.sql');
+        if (fs.existsSync(seedPath)) {
+            const seed = fs.readFileSync(seedPath, 'utf8');
+            db.exec(seed);
+            console.log('[Database] Initial seed data applied');
+        }
+    }
+
+    // Save to disk immediately after init
     saveDatabase();
-    console.log('Database initialized with schema and seed data');
     return db;
 }
 

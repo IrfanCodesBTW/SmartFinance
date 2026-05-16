@@ -8,32 +8,48 @@ const multer = require('multer');
 const database = require('./database');
 const valkey = require('./valkey');
 
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
-
-// Multer setup for memory storage
-const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
-});
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize database (async)
-let dbReady = false;
+// Multer setup for memory storage
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+    const dbStatus = database.getDb() ? 'connected' : 'disconnected';
+    const valkeyStatus = valkey.isValkeyConnected() ? 'connected' : 'disconnected';
+    
+    const isHealthy = dbStatus === 'connected'; // Valkey is optional
+    
+    res.status(isHealthy ? 200 : 503).json({
+        status: isHealthy ? 'healthy' : 'unhealthy',
+        database: dbStatus,
+        cache: valkeyStatus,
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Database & Cache Initialization
 database.initializeDatabase().then(() => {
-    dbReady = true;
-    console.log('Database ready');
+    console.log('[Database] Ready');
     valkey.deleteCachePattern('sf:*').then(count => {
         console.log(`[Cache] Flushed ${count} stale keys on startup`);
     }).catch(() => {});
 }).catch(err => {
-    console.error('Failed to initialize database:', err);
+    console.error('[Database] Initialization failed:', err);
 });
 
 // Helper function for API responses

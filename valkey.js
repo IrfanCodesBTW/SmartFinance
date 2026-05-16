@@ -4,26 +4,39 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 let client = null;
 let isConnected = false;
+let isRedisAvailable = true; // Flag to track if caching should be attempted
 
-const VALKEY_URL = process.env.VALKEY_URL || 'redis://127.0.0.1:6379';
+// Railway Valkey/Redis plugin sets REDIS_URL. Fallback to local Valkey or default.
+const REDIS_URL = process.env.REDIS_URL || process.env.VALKEY_URL || 'redis://127.0.0.1:6379';
 
 async function initValkey() {
+    if (!isRedisAvailable) return;
+
     try {
-        client = new Valkey({
-            connectionString: VALKEY_URL,
-            maxRetriesPerRequest: 3,
-            connectTimeout: 5000,
-            commandTimeout: 3000
+        client = new Valkey(REDIS_URL, {
+            maxRetriesPerRequest: 1, // Be aggressive in failing so app stays responsive
+            connectTimeout: 2000,
+            commandTimeout: 2000,
+            retryStrategy: (times) => {
+                if (times > 3) {
+                    console.warn('[Valkey] Max retries reached. Caching disabled for this session.');
+                    isRedisAvailable = false;
+                    return null; // Stop retrying
+                }
+                return Math.min(times * 100, 1000);
+            }
         });
 
         client.on('error', (err) => {
             console.warn('[Valkey] Connection error:', err.message);
             isConnected = false;
+            // Don't kill the app, just log and disable cache if it persists
         });
 
         client.on('connect', () => {
-            console.log('[Valkey] Connected to', VALKEY_URL);
+            console.log('[Valkey] Connected to Redis/Valkey');
             isConnected = true;
+            isRedisAvailable = true;
         });
 
         client.on('ready', () => {
@@ -34,15 +47,15 @@ async function initValkey() {
             isConnected = false;
         });
 
-        await client.connect();
     } catch (err) {
-        console.warn('[Valkey] Failed to connect:', err.message);
+        console.warn('[Valkey] Initialization failed:', err.message);
         isConnected = false;
+        isRedisAvailable = false;
     }
 }
 
 function isValkeyConnected() {
-    return isConnected && client !== null;
+    return isConnected && client !== null && isRedisAvailable;
 }
 
 function debugCache(...args) {
@@ -173,6 +186,7 @@ initValkey();
 
 module.exports = {
     isValkeyConnected,
+    isRedisAvailable: () => isRedisAvailable,
     getCache,
     setCache,
     deleteCache,
