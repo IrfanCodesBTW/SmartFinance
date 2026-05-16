@@ -163,7 +163,7 @@
             </div>
             <div class="ledger-controls">
                 <div class="search-box"><span class="material-symbols-outlined">search</span><input id="transactionSearch" type="search" placeholder="Search merchants or notes"></div>
-                <div class="month-control"><button class="icon-button" id="prevMonth" type="button" aria-label="Previous month"><span class="material-symbols-outlined">chevron_left</span></button><span id="currentMonth">May 2026</span><button class="icon-button" id="nextMonth" type="button" aria-label="Next month"><span class="material-symbols-outlined">chevron_right</span></button></div>
+                <div class="month-control"><button class="icon-button" id="prevMonth" type="button" aria-label="Previous month"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button><span id="currentMonth">May 2026</span><button class="icon-button" id="nextMonth" type="button" aria-label="Next month"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></button></div>
             </div>
             <article class="card ledger-card">
                 <div class="filter-row" id="categoryFilters"></div>
@@ -180,10 +180,24 @@
         <section class="screen" id="budgets-panel">
             <div class="page-heading">
                 <div><p class="eyebrow">Budget manager</p><h1>Budget Command</h1><p class="lede">Current financial trajectory, limits, and AI risk signals.</p></div>
-                <div class="toolbar"><div class="month-control"><button class="icon-button" id="prevBudgetMonth" type="button"><span class="material-symbols-outlined">chevron_left</span></button><span id="budgetMonth">May 2026</span><button class="icon-button" id="nextBudgetMonth" type="button"><span class="material-symbols-outlined">chevron_right</span></button></div><button class="primary-button" id="addBudgetBtn" type="button"><span class="material-symbols-outlined">add</span>New budget</button></div>
+                <div class="toolbar"><div class="month-control"><button class="icon-button" id="prevBudgetMonth" type="button"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button><span id="budgetMonth">May 2026</span><button class="icon-button" id="nextBudgetMonth" type="button"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></button></div><button class="primary-button" id="addBudgetBtn" type="button"><span class="material-symbols-outlined">add</span>New budget</button></div>
             </div>
             <div class="budget-hero">
-                <article class="card total-budget-card"><h2>Total Monthly Budget</h2><p>Across all configured categories</p><div class="budget-total-line"><strong id="budgetSpentTotal">Rs. 0</strong><span id="budgetLimitTotal">/ Rs. 0 limit</span></div><div class="progress-track"><div class="progress-fill" id="budgetTotalFill"></div></div><div class="split-line"><span id="budgetUtilized">0% utilized</span><strong id="budgetTrendLabel">Stable</strong></div></article>
+                <article class="card total-budget-card">
+                    <div class="budget-metrics-row">
+                        <div class="budget-metrics-left">
+                            <h2>Total Monthly Budget</h2>
+                            <p>Across all configured categories</p>
+                            <div class="budget-total-line"><strong id="budgetSpentTotal">Rs. 0</strong><span id="budgetLimitTotal">/ Rs. 0 limit</span></div>
+                            <div class="progress-track"><div class="progress-fill" id="budgetTotalFill"></div></div>
+                            <div class="split-line"><span id="budgetUtilized">0% utilized</span><strong id="budgetTrendLabel">Stable</strong></div>
+                        </div>
+                        <div class="budget-metrics-chart">
+                            <div class="chart-frame budget-doughnut"><canvas id="budgetChart"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="budget-comparison" id="budgetComparison"></div>
+                </article>
                 <article class="card ai-projection"><span class="material-symbols-outlined">auto_awesome</span><h2>AI Projection</h2><p id="budgetProjectionText">Refresh alerts to analyze your burn rate.</p><button class="surface-action" type="button" id="analyzeBurnBtn">Analyze burn rate</button></article>
             </div>
             <div class="section-title-row"><h2>Category Breakdown</h2></div>

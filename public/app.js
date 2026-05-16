@@ -18,6 +18,7 @@ const state = {
     selectedCategoryFilter: null,
     searchQuery: '',
     predictions: [],
+    categoryHistory: [],
     user: { name: 'Irfan', email: 'irfan@example.com' },
     settings: null,
     notifications: []
@@ -108,6 +109,7 @@ const createBudget = data => apiCall('/budgets', { method: 'POST', body: JSON.st
 const fetchSettings = () => apiCall('/settings');
 const updateSettingsApi = data => apiCall('/settings', { method: 'PUT', body: JSON.stringify(data) });
 const updateUserApi = data => apiCall('/user', { method: 'PUT', body: JSON.stringify(data) });
+const fetchCategoryHistory = (months = 6) => apiCall(`/category-history?months=${months}`);
 const fetchNotifications = () => apiCall(`/notifications?month=${state.currentMonth}`);
 const markNotificationsRead = () => apiCall('/notifications/read', { method: 'POST', body: '{}' });
 const fetchSupportRequests = () => apiCall('/support');
@@ -189,9 +191,9 @@ function applyTheme(theme, persist = true) {
 function switchTab(tabId) {
     const currentPanel = document.querySelector('.screen.active');
     if (currentPanel) {
-        currentPanel.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+        currentPanel.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
         currentPanel.style.opacity = '0';
-        currentPanel.style.transform = 'translateY(-8px)';
+        currentPanel.style.transform = 'translateY(-6px)';
     }
     
     setTimeout(() => {
@@ -213,9 +215,9 @@ function switchTab(tabId) {
         const panel = document.getElementById(`${tabId}-panel`);
         if (panel) {
             panel.classList.add('active');
-            panel.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+            panel.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
             panel.style.opacity = '0';
-            panel.style.transform = 'translateY(8px)';
+            panel.style.transform = 'translateY(6px)';
             panel.offsetHeight;
             panel.style.opacity = '1';
             panel.style.transform = 'translateY(0)';
@@ -225,9 +227,18 @@ function switchTab(tabId) {
         document.getElementById('profileToggle')?.setAttribute('aria-expanded', 'false');
         state.currentTab = tabId;
         debugLog('switch tab', tabId);
+        showTabSkeletons(tabId);
         loadTabData(tabId);
         runScreenAnimations();
-    }, 300);
+    }, 150);
+}
+
+function showTabSkeletons(tabId) {
+    if (tabId === 'transactions') setSkeleton('transactionsList', 4);
+    if (tabId === 'budgets') setSkeleton('budgetCards', 3);
+    if (tabId === 'dashboard') setSkeleton('recentTransactions', 3);
+    if (tabId === 'notifications') setSkeleton('notificationsList', 4);
+    if (tabId === 'support') setSkeleton('supportRequests', 3);
 }
 
 async function loadTabData(tabName) {
@@ -266,7 +277,7 @@ function normalizeBudget(budget) {
 
 async function refreshFinancialState({ reason = 'manual', month = state.currentMonth, includeSupport = false, includeSettings = false } = {}) {
     debugLog('refresh pipeline start', { reason, month });
-    const [summary, fullTxResult, recentTx, expenseData, trendData, budgets, notifications, settings, supportRequests] = await Promise.all([
+    const [summary, fullTxResult, recentTx, expenseData, trendData, budgets, notifications, catHistory, settings, supportRequests] = await Promise.all([
         fetchSummary(month),
         fetchTransactions(month, 1, null, 500),
         fetchRecentTransactions(5),
@@ -274,6 +285,7 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
         fetchTrendData(6),
         fetchBudgetHealth(month),
         fetchNotifications().catch(() => state.notifications),
+        fetchCategoryHistory(6).catch(() => []),
         includeSettings ? fetchSettings().catch(() => state.settings) : Promise.resolve(state.settings),
         includeSupport ? fetchSupportRequests().catch(() => state.supportRequests) : Promise.resolve(state.supportRequests)
     ]);
@@ -284,6 +296,7 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
     state.expenseByCategory = Array.isArray(expenseData) ? expenseData : [];
     state.trend = Array.isArray(trendData) ? trendData : [];
     state.budgets = (budgets || []).map(normalizeBudget);
+    state.categoryHistory = Array.isArray(catHistory) ? catHistory : [];
     state.notifications = Array.isArray(notifications) ? notifications : [];
     state.settings = settings;
     state.supportRequests = Array.isArray(supportRequests) ? supportRequests : state.supportRequests;
@@ -331,7 +344,10 @@ function refreshCharts() {
 
 function refreshBudgets() {
     renderBudgetHero(state.budgets);
-    if (state.currentTab === 'budgets') renderBudgetCards(state.budgets);
+    if (state.currentTab === 'budgets') {
+        window.updateBudgetChart?.(state.expenseByCategory, state.budgets);
+        renderBudgetCards(state.budgets);
+    }
 }
 
 function refreshAnalytics() {
@@ -373,15 +389,100 @@ function renderWatchlist(expenseData = []) {
         container.innerHTML = '<div class="empty-state">No expense watchlist yet.</div>';
         return;
     }
-    container.innerHTML = top.map(item => `
+
+    const months = [...new Set(state.categoryHistory.map(h => h.month))].sort();
+    const perCategoryHistory = {};
+    for (const entry of state.categoryHistory) {
+        if (!perCategoryHistory[entry.category_name]) {
+            perCategoryHistory[entry.category_name] = {};
+        }
+        perCategoryHistory[entry.category_name][entry.month] = Number(entry.total_amount || 0);
+    }
+
+    container.innerHTML = top.map((item, idx) => {
+        const hist = perCategoryHistory[item.name] || {};
+        const values = months.map(m => hist[m] || 0);
+        const maxVal = Math.max(...values, 1);
+        const color = item.color || '#fe6b00';
+        return `
         <article class="watch-card">
             <div class="flexish">
-                <div class="avatar" style="color:${item.color || '#fe6b00'}">${item.icon || '₹'}</div>
+                <div class="avatar" style="color:${color}">${item.icon || '₹'}</div>
                 <div><span>${escapeHtml(item.name)}</span><strong>${formatCurrency(item.total)}</strong></div>
             </div>
-            <span class="material-symbols-outlined muted">monitoring</span>
-        </article>
-    `).join('');
+            <canvas class="watch-sparkline" data-values="${escapeHtml(values.join(','))}" data-max="${maxVal}" data-color="${color}" width="80" height="36"></canvas>
+        </article>`;
+    }).join('');
+
+    requestAnimationFrame(() => {
+        container.querySelectorAll('.watch-sparkline').forEach(canvas => {
+            const raw = canvas.dataset.values.split(',').map(Number);
+            const max = Number(canvas.dataset.max) || 1;
+            const color = canvas.dataset.color || '#fe6b00';
+            drawMiniAreaChart(canvas, raw, max, color);
+        });
+    });
+}
+
+function drawMiniAreaChart(canvas, values, maxVal, color) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    const pad = 2;
+    const drawW = w - pad * 2;
+    const drawH = h - pad * 2;
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (values.length < 2 || values.every(v => v === 0)) {
+        ctx.fillStyle = 'rgba(128,128,128,0.3)';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('—', w / 2, h / 2 + 3);
+        return;
+    }
+
+    const points = [];
+    const stepX = drawW / (values.length - 1);
+    for (let i = 0; i < values.length; i++) {
+        const x = pad + i * stepX;
+        const y = pad + drawH - (values[i] / maxVal) * drawH;
+        points.push({ x, y, v: values[i] });
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.lineTo(points[points.length - 1].x, pad + drawH);
+    ctx.lineTo(points[0].x, pad + drawH);
+    ctx.closePath();
+
+    const gradient = ctx.createLinearGradient(0, pad, 0, pad + drawH);
+    gradient.addColorStop(0, hexToRGBA(color, 0.35));
+    gradient.addColorStop(1, hexToRGBA(color, 0.02));
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    const last = points[points.length - 1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
 }
 
 function renderBudgetSpark(budgets = []) {
@@ -589,6 +690,12 @@ function changeMonth(direction) {
     budgetMonth = state.currentMonth;
     state.transactionsPage = 1;
     debugLog('month changed', state.currentMonth);
+    const list = document.getElementById('transactionsList');
+    if (list) {
+        list.style.transition = 'opacity 0.2s ease';
+        list.style.opacity = '0';
+    }
+    setSkeleton('transactionsList', 4);
     debouncedRefreshFinancialState({ reason: 'month switch', month: state.currentMonth });
 }
 
@@ -600,6 +707,7 @@ async function loadBudgets() {
     }
     await refreshFinancialState({ reason: 'budget load', month: budgetMonth });
     renderBudgetCards(state.budgets);
+    setTimeout(() => window.resizeBudgetChart?.(), 100);
 }
 
 function renderBudgetHero(budgets = []) {

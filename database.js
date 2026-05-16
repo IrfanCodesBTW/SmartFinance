@@ -317,23 +317,31 @@ function getExpenseByCategory(month) {
     `, [month]);
 }
 
-function getCategoryHistory(months = 3) {
-    // Get historical spend per category for the last N months (excluding current)
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    return queryAll(`
-        SELECT
-            c.id as category_id,
-            c.name as category_name,
-            strftime('%Y-%m', t.date) as month,
-            SUM(t.amount) as total_amount
-        FROM transactions t
-        JOIN categories c ON t.category_id = c.id
-        WHERE t.user_id = 1
-            AND c.type = 'expense'
-            AND strftime('%Y-%m', t.date) < ?
-        GROUP BY c.id, c.name, month
-        ORDER BY month DESC, total_amount DESC
-    `, [currentMonth]); 
+function getCategoryHistory(months = 6) {
+    const cutoff = months === 0 ? null : months;
+    const sql = cutoff
+        ? `SELECT c.id as category_id, c.name as category_name, c.icon as category_icon,
+                  c.color as category_color, strftime('%Y-%m', t.date) as month,
+                  SUM(t.amount) as total_amount
+           FROM transactions t
+           JOIN categories c ON t.category_id = c.id
+           WHERE t.user_id = 1 AND c.type = 'expense'
+           GROUP BY c.id, c.name, c.icon, c.color, month
+           ORDER BY month ASC, total_amount DESC`
+        : `SELECT c.id as category_id, c.name as category_name, c.icon as category_icon,
+                  c.color as category_color, strftime('%Y-%m', t.date) as month,
+                  SUM(t.amount) as total_amount
+           FROM transactions t
+           JOIN categories c ON t.category_id = c.id
+           WHERE t.user_id = 1 AND c.type = 'expense'
+           GROUP BY c.id, c.name, c.icon, c.color, month
+           ORDER BY month DESC, total_amount DESC
+           LIMIT ?`;
+    const params = cutoff ? [] : [months];
+    const result = queryAll(sql, params);
+    if (!cutoff) return result;
+    const uniqueMonths = [...new Set(result.map(r => r.month))].sort().slice(-months);
+    return result.filter(r => uniqueMonths.includes(r.month));
 }
 
 function getCurrentMonthDay() {

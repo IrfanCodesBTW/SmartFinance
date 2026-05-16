@@ -2,6 +2,7 @@ let expenseChartInstance = null;
 let analyticsChartInstance = null;
 let trendChartInstance = null;
 let dashboardTrendChartInstance = null;
+let budgetChartInstance = null;
 let selectedExpenseCategory = null;
 
 const latestChartData = {
@@ -291,6 +292,142 @@ function updateTrendChart(chartInstance, data) {
     chartInstance.update();
 }
 
+let budgetSelectedCategory = null;
+
+function initBudgetChart(canvasId = 'budgetChart') {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !window.Chart) return null;
+    const theme = getThemeColors();
+    canvas.width = 130;
+    canvas.height = 130;
+    return new Chart(canvas, {
+        type: 'doughnut',
+        data: {
+            labels: [],
+            datasets: [{
+                data: [],
+                backgroundColor: [],
+                borderColor: theme.panel,
+                borderWidth: 3,
+                hoverOffset: 10,
+                offset: ctx => {
+                    const name = ctx.chart.$budgetCategories?.[ctx.dataIndex];
+                    return budgetSelectedCategory === name ? 16 : 0;
+                }
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '68%',
+            onClick(event, elements, chart) {
+                if (!elements.length) {
+                    budgetSelectedCategory = null;
+                } else {
+                    const idx = elements[0].index;
+                    const name = chart.$budgetCategories?.[idx] || chart.data.labels[idx];
+                    budgetSelectedCategory = budgetSelectedCategory === name ? null : name;
+                }
+                chart.update();
+                highlightBudgetComparison(budgetSelectedCategory);
+            },
+            onHover(event, elements) {
+                const canvas = event.chart.canvas;
+                canvas.style.cursor = elements.length ? 'pointer' : 'default';
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: theme.panel,
+                    titleColor: theme.text,
+                    bodyColor: theme.text,
+                    borderColor: theme.outline,
+                    borderWidth: 1,
+                    cornerRadius: 10,
+                    padding: 10,
+                    callbacks: {
+                        label(ctx) {
+                            const total = ctx.dataset.data.reduce((s, v) => s + Number(v || 0), 0);
+                            const pct = total ? Math.round((Number(ctx.raw || 0) / total) * 100) : 0;
+                            return `${ctx.label}: ${formatRupees(ctx.raw)} (${pct}%)`;
+                        }
+                    }
+                },
+                centerText: {
+                    display: true,
+                    text: chart => {
+                        const data = chart.data.datasets[0]?.data || [];
+                        const labels = chart.data?.labels || [];
+                        if (!data.length) return { top: 'No data', bottom: '—' };
+                        const total = data.reduce((s, v) => s + Number(v || 0), 0);
+                        if (total === 0) return { top: 'No spend', bottom: '—' };
+                        if (budgetSelectedCategory) {
+                            const idx = labels.indexOf(budgetSelectedCategory);
+                            const val = idx >= 0 ? Number(data[idx] || 0) : 0;
+                            const pct = Math.round((val / total) * 100);
+                            return { top: budgetSelectedCategory.length > 8 ? budgetSelectedCategory.substring(0, 7) + '...' : budgetSelectedCategory, bottom: pct + '%' };
+                        }
+                        return { top: formatRupees(total), bottom: 'total' };
+                    }
+                }
+            },
+            animation: { duration: 400 }
+        }
+    });
+}
+
+function updateBudgetChart(categories, budgets) {
+    if (!budgetChartInstance) budgetChartInstance = initBudgetChart();
+    if (!budgetChartInstance) return;
+    const data = Array.isArray(categories) ? categories : [];
+    const theme = getThemeColors();
+    const palette = ['#FF6B35', '#10B981', '#3B82F6', '#F59E0B', '#A371F7', '#06B6D4', '#F97316', '#FF8C5A'];
+    budgetChartInstance.$budgetCategories = data.map(item => item.name);
+    budgetChartInstance.data.labels = data.map(item => item.name);
+    budgetChartInstance.data.datasets[0].data = data.map(item => Number(item.total || 0));
+    budgetChartInstance.data.datasets[0].backgroundColor = data.map((item, idx) => item.color || palette[idx % palette.length]);
+    budgetChartInstance.data.datasets[0].borderColor = theme.panel;
+    budgetChartInstance.options.plugins.tooltip = tooltipOptions();
+    budgetChartInstance.update();
+    budgetChartInstance.resize();
+    renderBudgetComparison(budgets);
+}
+
+function highlightBudgetComparison(selectedName) {
+    const container = document.getElementById('budgetComparison');
+    if (!container) return;
+    container.querySelectorAll('.budget-compare-row').forEach(row => {
+        const label = row.querySelector('.compare-label')?.textContent?.trim() || '';
+        row.style.opacity = !selectedName || label.includes(selectedName) ? '1' : '0.4';
+    });
+}
+
+function renderBudgetComparison(budgets) {
+    const container = document.getElementById('budgetComparison');
+    if (!container) return;
+    const items = Array.isArray(budgets) ? budgets : [];
+    if (!items.length) {
+        container.innerHTML = '';
+        return;
+    }
+    const palette = ['#FF6B35', '#10B981', '#3B82F6', '#F59E0B', '#A371F7', '#06B6D4', '#F97316', '#FF8C5A'];
+    container.innerHTML = items.map((b, idx) => {
+        const spent = Number(b.spent_amount || 0);
+        const limit = Number(b.budget_amount || 0);
+        const pct = limit ? Math.min(100, Math.round((spent / limit) * 100)) : 0;
+        const color = b.category_color || palette[idx % palette.length];
+        const over = spent > limit;
+        return `
+            <div class="budget-compare-row">
+                <span class="compare-label">${b.category_icon || ''} ${b.category_name || 'Budget'}</span>
+                <div class="compare-track">
+                    <div class="compare-fill" style="width:${pct}%; background:${over ? 'var(--danger)' : color}"></div>
+                </div>
+                <span class="compare-value" style="color:${over ? 'var(--danger)' : 'inherit'}">${formatRupees(spent)}${over ? '!' : ''}</span>
+            </div>`;
+    }).join('');
+}
+
 function initializeCharts() {
     if (!window.Chart) return;
     applyChartDefaults();
@@ -298,10 +435,12 @@ function initializeCharts() {
     destroyChart(analyticsChartInstance);
     destroyChart(trendChartInstance);
     destroyChart(dashboardTrendChartInstance);
+    destroyChart(budgetChartInstance);
     expenseChartInstance = initExpenseChart('expenseChart');
     analyticsChartInstance = initExpenseChart('analyticsChart');
     trendChartInstance = initTrendChart('trendChart');
     dashboardTrendChartInstance = initTrendChart('dashboardTrendChart');
+    budgetChartInstance = initBudgetChart('budgetChart');
 }
 
 function updateDashboardCharts(expenseData, trendData = latestChartData.analyticsTrend) {
@@ -331,7 +470,12 @@ function updateChartTheme() {
     initializeCharts();
     updateDashboardCharts(latestChartData.dashboardExpense, latestChartData.analyticsTrend);
     updateAnalyticsCharts(latestChartData.analyticsTrend, latestChartData.analyticsCategory);
+    updateBudgetChart(latestChartData.dashboardExpense, []);
     window.updateExpenseBreakdown?.(selectedExpenseCategory);
+}
+
+function resizeBudgetChart() {
+    if (budgetChartInstance) budgetChartInstance.resize();
 }
 
 window.initializeCharts = initializeCharts;
@@ -341,6 +485,9 @@ window.updateExpenseChart = updateExpenseChart;
 window.updateTrendChart = updateTrendChart;
 window.updateChartTheme = updateChartTheme;
 window.refreshChartsForTab = refreshChartsForTab;
+window.updateBudgetChart = updateBudgetChart;
+window.resizeBudgetChart = resizeBudgetChart;
+window.highlightBudgetComparison = highlightBudgetComparison;
 window.hexToRGBA = hexToRGBA;
 window.__SF_CHART_STATE__ = () => ({
     selectedExpenseCategory,

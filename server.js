@@ -684,6 +684,22 @@ app.get('/api/expense-by-category', async (req, res) => {
     }
 });
 
+app.get('/api/category-history', async (req, res) => {
+    try {
+        const months = parseInt(req.query.months) || 6;
+        const cacheKey = `sf:cat-hist:${months}`;
+        const cached = await valkey.getCache(cacheKey);
+        if (cached) return apiResponse(res, true, cached);
+
+        const history = database.getCategoryHistory(months);
+        await safeSetCache(cacheKey, history, 600);
+        apiResponse(res, true, history);
+    } catch (error) {
+        const history = database.getCategoryHistory(parseInt(req.query.months) || 6);
+        apiResponse(res, true, history);
+    }
+});
+
 // ============================================
 // AI Roast API - MODULE V: Aggregation View
 // ============================================
