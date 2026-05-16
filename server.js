@@ -29,6 +29,9 @@ let dbReady = false;
 database.initializeDatabase().then(() => {
     dbReady = true;
     console.log('Database ready');
+    valkey.deleteCachePattern('sf:*').then(count => {
+        console.log(`[Cache] Flushed ${count} stale keys on startup`);
+    }).catch(() => {});
 }).catch(err => {
     console.error('Failed to initialize database:', err);
 });
@@ -344,13 +347,18 @@ app.get('/api/transactions', async (req, res) => {
         await safeSetCache(cacheKey, result, 120);
         apiResponse(res, true, result);
     } catch (error) {
-        const result = database.getTransactions({
-            month: req.query.month,
-            category_id: req.query.category_id ? parseInt(req.query.category_id) : undefined,
-            page: parseInt(req.query.page) || 1,
-            limit: parseInt(req.query.limit) || 10
-        });
-        apiResponse(res, true, result);
+        try {
+            const result = database.getTransactions({
+                month: req.query.month,
+                category_id: req.query.category_id ? parseInt(req.query.category_id) : undefined,
+                page: parseInt(req.query.page) || 1,
+                limit: parseInt(req.query.limit) || 10
+            });
+            apiResponse(res, true, result);
+        } catch (dbError) {
+            console.error('Transactions fallback error:', dbError);
+            apiResponse(res, true, { transactions: [], total: 0, page: 1, limit: 10 });
+        }
     }
 });
 
@@ -489,9 +497,14 @@ app.get('/api/summary', async (req, res) => {
         await safeSetCache(cacheKey, result, 300);
         apiResponse(res, true, result);
     } catch (error) {
-        const { month } = req.query;
-        const summary = database.getMonthlySummary(month);
-        apiResponse(res, true, summary || { month, total_income: 0, total_expense: 0, savings: 0 });
+        try {
+            const { month } = req.query;
+            const summary = database.getMonthlySummary(month);
+            apiResponse(res, true, summary || { month, total_income: 0, total_expense: 0, savings: 0 });
+        } catch (dbError) {
+            console.error('Summary fallback error:', dbError);
+            apiResponse(res, true, { month: req.query.month, total_income: 0, total_expense: 0, savings: 0 });
+        }
     }
 });
 
@@ -533,8 +546,13 @@ app.get('/api/budgets', async (req, res) => {
         await safeSetCache(cacheKey, budgets, 300);
         apiResponse(res, true, budgets);
     } catch (error) {
-        const budgets = database.getBudgets(req.query.month);
-        apiResponse(res, true, budgets);
+        try {
+            const budgets = database.getBudgets(req.query.month);
+            apiResponse(res, true, budgets);
+        } catch (dbError) {
+            console.error('Budgets fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 
@@ -610,8 +628,13 @@ app.get('/api/budget-health', async (req, res) => {
         await safeSetCache(cacheKey, health, 180);
         apiResponse(res, true, health);
     } catch (error) {
-        const health = database.getBudgetHealth(req.query.month);
-        apiResponse(res, true, health);
+        try {
+            const health = database.getBudgetHealth(req.query.month);
+            apiResponse(res, true, health);
+        } catch (dbError) {
+            console.error('Budget health fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 
@@ -635,8 +658,13 @@ app.get('/api/trend', async (req, res) => {
         await safeSetCache(cacheKey, result, 600);
         apiResponse(res, true, result);
     } catch (error) {
-        const trend = database.getTrendData(parseInt(req.query.months) || 6);
-        apiResponse(res, true, trend.reverse());
+        try {
+            const trend = database.getTrendData(parseInt(req.query.months) || 6);
+            apiResponse(res, true, trend.reverse());
+        } catch (dbError) {
+            console.error('Trend fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 
@@ -657,8 +685,13 @@ app.get('/api/category-breakdown', async (req, res) => {
         await safeSetCache(cacheKey, breakdown, 300);
         apiResponse(res, true, breakdown);
     } catch (error) {
-        const breakdown = database.getCategoryBreakdown(req.query.month);
-        apiResponse(res, true, breakdown);
+        try {
+            const breakdown = database.getCategoryBreakdown(req.query.month);
+            apiResponse(res, true, breakdown);
+        } catch (dbError) {
+            console.error('Category breakdown fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 
@@ -679,8 +712,13 @@ app.get('/api/expense-by-category', async (req, res) => {
         await safeSetCache(cacheKey, expenses, 300);
         apiResponse(res, true, expenses);
     } catch (error) {
-        const expenses = database.getExpenseByCategory(req.query.month);
-        apiResponse(res, true, expenses);
+        try {
+            const expenses = database.getExpenseByCategory(req.query.month);
+            apiResponse(res, true, expenses);
+        } catch (dbError) {
+            console.error('Expense by category fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 
@@ -695,8 +733,13 @@ app.get('/api/category-history', async (req, res) => {
         await safeSetCache(cacheKey, history, 600);
         apiResponse(res, true, history);
     } catch (error) {
-        const history = database.getCategoryHistory(parseInt(req.query.months) || 6);
-        apiResponse(res, true, history);
+        try {
+            const history = database.getCategoryHistory(parseInt(req.query.months) || 6);
+            apiResponse(res, true, history);
+        } catch (dbError) {
+            console.error('Category history fallback error:', dbError);
+            apiResponse(res, true, []);
+        }
     }
 });
 

@@ -24,9 +24,16 @@ async function initializeDatabase() {
     const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
     db.exec(schema);
 
-    // Run seed data
-    const seed = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
-    db.exec(seed);
+    // Run seed data only if the database is empty (no transactions)
+    const existing = db.exec('SELECT COUNT(*) as cnt FROM transactions');
+    const hasData = existing?.[0]?.values?.[0]?.[0] > 0;
+    if (!hasData) {
+        const seed = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
+        db.exec(seed);
+        console.log('Database seeded with initial data');
+    } else {
+        console.log('Database already has data, skipping seed');
+    }
 
     // Save to file
     saveDatabase();
@@ -318,29 +325,18 @@ function getExpenseByCategory(month) {
 }
 
 function getCategoryHistory(months = 6) {
-    const cutoff = months === 0 ? null : months;
-    const sql = cutoff
-        ? `SELECT c.id as category_id, c.name as category_name, c.icon as category_icon,
-                  c.color as category_color, strftime('%Y-%m', t.date) as month,
-                  SUM(t.amount) as total_amount
-           FROM transactions t
-           JOIN categories c ON t.category_id = c.id
-           WHERE t.user_id = 1 AND c.type = 'expense'
-           GROUP BY c.id, c.name, c.icon, c.color, month
-           ORDER BY month ASC, total_amount DESC`
-        : `SELECT c.id as category_id, c.name as category_name, c.icon as category_icon,
-                  c.color as category_color, strftime('%Y-%m', t.date) as month,
-                  SUM(t.amount) as total_amount
-           FROM transactions t
-           JOIN categories c ON t.category_id = c.id
-           WHERE t.user_id = 1 AND c.type = 'expense'
-           GROUP BY c.id, c.name, c.icon, c.color, month
-           ORDER BY month DESC, total_amount DESC
-           LIMIT ?`;
-    const params = cutoff ? [] : [months];
-    const result = queryAll(sql, params);
-    if (!cutoff) return result;
-    const uniqueMonths = [...new Set(result.map(r => r.month))].sort().slice(-months);
+    const numMonths = Number(months) || 6;
+    const result = queryAll(`
+        SELECT c.id as category_id, c.name as category_name, c.icon as category_icon,
+               c.color as category_color, strftime('%Y-%m', t.date) as month,
+               SUM(t.amount) as total_amount
+        FROM transactions t
+        JOIN categories c ON t.category_id = c.id
+        WHERE t.user_id = 1 AND c.type = 'expense'
+        GROUP BY c.id, c.name, c.icon, c.color, month
+        ORDER BY month ASC, total_amount DESC
+    `);
+    const uniqueMonths = [...new Set(result.map(r => r.month))].sort().slice(-numMonths);
     return result.filter(r => uniqueMonths.includes(r.month));
 }
 

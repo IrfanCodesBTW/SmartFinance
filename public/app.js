@@ -26,6 +26,7 @@ const state = {
 
 let budgetMonth = getCurrentMonth();
 let lastSummary = null;
+let refreshAbortController = null;
 const roastCache = {};
 window.__SF_DEBUG__ = true;
 
@@ -276,19 +277,25 @@ function normalizeBudget(budget) {
 }
 
 async function refreshFinancialState({ reason = 'manual', month = state.currentMonth, includeSupport = false, includeSettings = false } = {}) {
+    if (refreshAbortController) refreshAbortController.abort();
+    refreshAbortController = new AbortController();
+    const signal = refreshAbortController.signal;
+
     debugLog('refresh pipeline start', { reason, month });
     const [summary, fullTxResult, recentTx, expenseData, trendData, budgets, notifications, catHistory, settings, supportRequests] = await Promise.all([
-        fetchSummary(month),
-        fetchTransactions(month, 1, null, 500),
-        fetchRecentTransactions(5),
-        fetchExpenseByCategory(month),
-        fetchTrendData(6),
-        fetchBudgetHealth(month),
+        fetchSummary(month).catch(() => state.metrics),
+        fetchTransactions(month, 1, null, 500).catch(() => ({ transactions: [], total: 0, page: 1, limit: 500 })),
+        fetchRecentTransactions(5).catch(() => []),
+        fetchExpenseByCategory(month).catch(() => []),
+        fetchTrendData(6).catch(() => []),
+        fetchBudgetHealth(month).catch(() => []),
         fetchNotifications().catch(() => state.notifications),
         fetchCategoryHistory(6).catch(() => []),
         includeSettings ? fetchSettings().catch(() => state.settings) : Promise.resolve(state.settings),
         includeSupport ? fetchSupportRequests().catch(() => state.supportRequests) : Promise.resolve(state.supportRequests)
     ]);
+
+    if (signal.aborted) return;
 
     state.metrics = summary || {};
     state.transactions = (fullTxResult.transactions || []).map(normalizeTransaction);
@@ -302,6 +309,8 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
     state.supportRequests = Array.isArray(supportRequests) ? supportRequests : state.supportRequests;
     lastSummary = state.metrics;
 
+    if (signal.aborted) return;
+
     refreshMetrics();
     renderWatchlist(state.expenseByCategory);
     renderBudgetSpark(state.budgets);
@@ -314,7 +323,7 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
     refreshAlerts();
     refreshAnalytics();
     refreshCharts();
-    if (state.currentTab === 'transactions') await loadTransactions();
+    if (state.currentTab === 'transactions') renderTransactionsPage();
 
     window.updateExpenseBreakdown?.(state.selectedExpenseCategory);
     runScreenAnimations();
@@ -579,10 +588,33 @@ function renderRecentTransactions(transactions) {
 }
 
 async function loadTransactions() {
+    try {
+        setText('currentMonth', formatMonth(state.currentMonth));
+        await loadCategoryFilters();
+        const result = await fetchTransactions(state.currentMonth, state.transactionsPage, state.selectedCategoryFilter);
+        let transactions = result.transactions || [];
+        if (state.searchQuery) {
+            const q = state.searchQuery.toLowerCase();
+            transactions = transactions.filter(tx =>
+                String(tx.description || '').toLowerCase().includes(q) ||
+                String(tx.category_name || '').toLowerCase().includes(q)
+            );
+        }
+        renderTransactions(transactions);
+        renderPagination(result);
+    } catch (error) {
+        console.error('Failed to load transactions:', error);
+        renderTransactions([]);
+        showToast('Failed to load transactions', 'error');
+    }
+}
+
+function renderTransactionsPage() {
     setText('currentMonth', formatMonth(state.currentMonth));
-    await loadCategoryFilters();
-    const result = await fetchTransactions(state.currentMonth, state.transactionsPage, state.selectedCategoryFilter);
-    let transactions = result.transactions || [];
+    let transactions = [...state.transactions];
+    if (state.selectedCategoryFilter) {
+        transactions = transactions.filter(t => t.category_id === state.selectedCategoryFilter);
+    }
     if (state.searchQuery) {
         const q = state.searchQuery.toLowerCase();
         transactions = transactions.filter(tx =>
@@ -590,8 +622,10 @@ async function loadTransactions() {
             String(tx.category_name || '').toLowerCase().includes(q)
         );
     }
-    renderTransactions(transactions);
-    renderPagination(result);
+    const start = (state.transactionsPage - 1) * state.transactionsLimit;
+    const page = transactions.slice(start, start + state.transactionsLimit);
+    renderTransactions(page);
+    renderPagination({ total: transactions.length, page: state.transactionsPage, limit: state.transactionsLimit });
 }
 
 async function loadCategoryFilters() {
@@ -649,20 +683,22 @@ function renderTransactions(transactions) {
     if (!container) return;
     if (!transactions || transactions.length === 0) {
         container.innerHTML = `<tr><td colspan="5">${emptyState('No transactions match this view.')}</td></tr>`;
-        return;
+    } else {
+        container.innerHTML = transactions.map(tx => {
+            const type = tx.category_type === 'income' ? 'income' : 'expense';
+            return `
+                <tr>
+                    <td><div class="category-avatar" style="color:${tx.category_color || '#fe6b00'}">${tx.category_icon || '₹'}</div></td>
+                    <td><div class="transaction-title">${escapeHtml(tx.description || tx.category_name || 'Transaction')}</div><div class="transaction-date">${escapeHtml(tx.category_name || '')} · ${formatDate(tx.date, true)}</div></td>
+                    <td><span class="tag">${escapeHtml(type)}</span></td>
+                    <td class="amount-cell"><strong class="${type}">${type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}</strong></td>
+                    <td><div class="row-actions"><button class="mini-icon" type="button" onclick="openEditModal(${tx.id})" aria-label="Edit"><span class="material-symbols-outlined">edit</span></button><button class="mini-icon" type="button" onclick="deleteTx(${tx.id})" aria-label="Delete"><span class="material-symbols-outlined">delete</span></button></div></td>
+                </tr>
+            `;
+        }).join('');
     }
-    container.innerHTML = transactions.map(tx => {
-        const type = tx.category_type === 'income' ? 'income' : 'expense';
-        return `
-            <tr>
-                <td><div class="category-avatar" style="color:${tx.category_color || '#fe6b00'}">${tx.category_icon || '₹'}</div></td>
-                <td><div class="transaction-title">${escapeHtml(tx.description || tx.category_name || 'Transaction')}</div><div class="transaction-date">${escapeHtml(tx.category_name || '')} · ${formatDate(tx.date, true)}</div></td>
-                <td><span class="tag">${escapeHtml(type)}</span></td>
-                <td class="amount-cell"><strong class="${type}">${type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}</strong></td>
-                <td><div class="row-actions"><button class="mini-icon" type="button" onclick="openEditModal(${tx.id})" aria-label="Edit"><span class="material-symbols-outlined">edit</span></button><button class="mini-icon" type="button" onclick="deleteTx(${tx.id})" aria-label="Delete"><span class="material-symbols-outlined">delete</span></button></div></td>
-            </tr>
-        `;
-    }).join('');
+    container.style.transition = 'opacity 0.2s ease';
+    container.style.opacity = '1';
 }
 
 function transactionListRow(tx) {
@@ -689,7 +725,15 @@ function changeMonth(direction) {
     state.currentMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
     budgetMonth = state.currentMonth;
     state.transactionsPage = 1;
+    state.selectedCategoryFilter = null;
+    state.searchQuery = '';
+    const searchInput = document.getElementById('transactionSearch');
+    if (searchInput) searchInput.value = '';
     debugLog('month changed', state.currentMonth);
+
+    setText('currentMonth', formatMonth(state.currentMonth));
+    setText('budgetMonth', formatMonth(state.currentMonth));
+
     const list = document.getElementById('transactionsList');
     if (list) {
         list.style.transition = 'opacity 0.2s ease';
@@ -700,14 +744,19 @@ function changeMonth(direction) {
 }
 
 async function loadBudgets() {
-    setText('budgetMonth', formatMonth(budgetMonth));
-    if (budgetMonth !== state.currentMonth) {
-        state.currentMonth = budgetMonth;
-        state.transactionsPage = 1;
+    try {
+        setText('budgetMonth', formatMonth(budgetMonth));
+        if (budgetMonth !== state.currentMonth) {
+            state.currentMonth = budgetMonth;
+            state.transactionsPage = 1;
+        }
+        await refreshFinancialState({ reason: 'budget load', month: budgetMonth });
+        renderBudgetCards(state.budgets);
+        setTimeout(() => window.resizeBudgetChart?.(), 100);
+    } catch (error) {
+        console.error('Failed to load budgets:', error);
+        showToast('Failed to load budget data', 'error');
     }
-    await refreshFinancialState({ reason: 'budget load', month: budgetMonth });
-    renderBudgetCards(state.budgets);
-    setTimeout(() => window.resizeBudgetChart?.(), 100);
 }
 
 function renderBudgetHero(budgets = []) {
@@ -759,7 +808,15 @@ function changeBudgetMonth(direction) {
     budgetMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
     state.currentMonth = budgetMonth;
     state.transactionsPage = 1;
+    state.selectedCategoryFilter = null;
+    state.searchQuery = '';
+    const searchInput = document.getElementById('transactionSearch');
+    if (searchInput) searchInput.value = '';
     debugLog('budget month changed', budgetMonth);
+
+    setText('currentMonth', formatMonth(state.currentMonth));
+    setText('budgetMonth', formatMonth(state.currentMonth));
+
     debouncedRefreshFinancialState({ reason: 'budget month switch', month: budgetMonth });
 }
 
