@@ -190,48 +190,31 @@ function applyTheme(theme, persist = true) {
 }
 
 function switchTab(tabId) {
-    const currentPanel = document.querySelector('.screen.active');
-    if (currentPanel) {
-        currentPanel.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
-        currentPanel.style.opacity = '0';
-        currentPanel.style.transform = 'translateY(-6px)';
-    }
-    
-    setTimeout(() => {
-        document.querySelectorAll('.nav-tab, .mobile-nav-tab').forEach(btn => {
-            btn.classList.remove('active');
-            btn.style.color = '';
-        });
+    document.querySelectorAll('.nav-tab, .mobile-nav-tab').forEach(btn => {
+        btn.classList.remove('active');
+        btn.style.color = '';
+    });
+    document.querySelectorAll(`[data-tab="${tabId}"]`).forEach(btn => {
+        btn.classList.add('active');
+    });
+    document.querySelectorAll('.screen').forEach(panel => {
+        panel.classList.remove('active');
+        panel.style.opacity = '';
+        panel.style.transform = '';
+        panel.style.transition = '';
+    });
+    const panel = document.getElementById(`${tabId}-panel`);
+    if (panel) panel.classList.add('active');
 
-        document.querySelectorAll(`[data-tab="${tabId}"]`).forEach(btn => {
-            btn.classList.add('active');
-        });
-
-        document.querySelectorAll('.screen').forEach(panel => {
-            panel.classList.remove('active');
-            panel.style.opacity = '';
-            panel.style.transform = '';
-        });
-        
-        const panel = document.getElementById(`${tabId}-panel`);
-        if (panel) {
-            panel.classList.add('active');
-            panel.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-            panel.style.opacity = '0';
-            panel.style.transform = 'translateY(6px)';
-            panel.offsetHeight;
-            panel.style.opacity = '1';
-            panel.style.transform = 'translateY(0)';
-        }
-
-        document.getElementById('profileMenu')?.classList.add('hidden');
-        document.getElementById('profileToggle')?.setAttribute('aria-expanded', 'false');
-        state.currentTab = tabId;
-        debugLog('switch tab', tabId);
-        showTabSkeletons(tabId);
-        loadTabData(tabId);
-        runScreenAnimations();
-    }, 150);
+    document.getElementById('profileMenu')?.classList.add('hidden');
+    document.getElementById('profileToggle')?.setAttribute('aria-expanded', 'false');
+    state.currentTab = tabId;
+    debugLog('switch tab', tabId);
+    showTabSkeletons(tabId);
+    loadTabData(tabId);
+    seedAnimateTargets();
+    runScreenAnimations();
+    window.resizeChartsForTab?.(tabId);
 }
 
 function showTabSkeletons(tabId) {
@@ -284,7 +267,7 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
     debugLog('refresh pipeline start', { reason, month });
     const [summary, fullTxResult, recentTx, expenseData, trendData, budgets, notifications, catHistory, settings, supportRequests] = await Promise.all([
         fetchSummary(month).catch(() => state.metrics),
-        fetchTransactions(month, 1, null, 500).catch(() => ({ transactions: [], total: 0, page: 1, limit: 500 })),
+        fetchTransactions(month, 1, null, 50).catch(() => ({ transactions: [], total: 0, page: 1, limit: 50 })),
         fetchRecentTransactions(5).catch(() => []),
         fetchExpenseByCategory(month).catch(() => []),
         fetchTrendData(6).catch(() => []),
@@ -326,7 +309,6 @@ async function refreshFinancialState({ reason = 'manual', month = state.currentM
     if (state.currentTab === 'transactions') renderTransactionsPage();
 
     window.updateExpenseBreakdown?.(state.selectedExpenseCategory);
-    runScreenAnimations();
     debugLog('refresh pipeline complete', {
         reason,
         transactions: state.transactions.length,
@@ -1277,7 +1259,8 @@ function runScreenAnimations() {
         duration: 0.3,
         ease: 'power3.out',
         stagger: { amount: 0.15, from: 'start' },
-        delay: 0.02
+        delay: 0.02,
+        clearProps: 'transform'
     });
 }
 
@@ -1432,8 +1415,13 @@ if (document.readyState === 'loading') {
     bootSmartFinance();
 }
 
+let mouseRaf = null;
 document.addEventListener('mousemove', e => {
-    const pct = (v, max) => `${((v / max) * 100).toFixed(1)}%`;
-    document.body.style.setProperty('--mx', pct(e.clientX, window.innerWidth));
-    document.body.style.setProperty('--my', pct(e.clientY, window.innerHeight));
+    if (mouseRaf) return;
+    mouseRaf = requestAnimationFrame(() => {
+        const pct = (v, max) => `${((v / max) * 100).toFixed(1)}%`;
+        document.body.style.setProperty('--mx', pct(e.clientX, window.innerWidth));
+        document.body.style.setProperty('--my', pct(e.clientY, window.innerHeight));
+        mouseRaf = null;
+    });
 });

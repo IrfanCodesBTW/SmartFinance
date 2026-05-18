@@ -8,7 +8,9 @@ let selectedExpenseCategory = null;
 const latestChartData = {
     dashboardExpense: [],
     analyticsTrend: [],
-    analyticsCategory: []
+    analyticsCategory: [],
+    budgetCategories: [],
+    budgetData: []
 };
 
 const chartPalette = ['#FF6B35', '#10B981', '#3B82F6', '#F59E0B', '#2D2D3F', '#06B6D4', '#F97316', '#FF8C5A'];
@@ -60,6 +62,7 @@ function registerCenterTextPlugin() {
             const opt = chart.options.plugins?.centerText;
             const isDisplayEnabled = opt && (opt.display === true || opt.display === undefined);
             if (!isDisplayEnabled) return;
+            if (!chart.chartArea) return;
             const { ctx, chartArea: { left, right, top, bottom } } = chart;
             const cx = (left + right) / 2;
             const cy = (top + bottom) / 2;
@@ -67,7 +70,7 @@ function registerCenterTextPlugin() {
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillStyle = getThemeColors().text;
+            ctx.fillStyle = getThemeColors().text || '#E8E8ED';
             if (typeof textConfig === 'object' && textConfig.top && textConfig.bottom) {
                 ctx.font = "600 0.85rem 'Inter', sans-serif";
                 ctx.fillText(textConfig.top, cx, cy - 10);
@@ -377,6 +380,8 @@ function initBudgetChart(canvasId = 'budgetChart') {
 }
 
 function updateBudgetChart(categories, budgets) {
+    latestChartData.budgetCategories = Array.isArray(categories) ? categories : [];
+    latestChartData.budgetData = Array.isArray(budgets) ? budgets : [];
     if (!budgetChartInstance) budgetChartInstance = initBudgetChart();
     if (!budgetChartInstance) return;
     const data = Array.isArray(categories) ? categories : [];
@@ -467,10 +472,26 @@ function refreshChartsForTab() {
 }
 
 function updateChartTheme() {
-    initializeCharts();
-    updateDashboardCharts(latestChartData.dashboardExpense, latestChartData.analyticsTrend);
-    updateAnalyticsCharts(latestChartData.analyticsTrend, latestChartData.analyticsCategory);
-    updateBudgetChart(latestChartData.dashboardExpense, []);
+    applyChartDefaults();
+    const theme = getThemeColors();
+    [expenseChartInstance, analyticsChartInstance].forEach(chart => {
+        if (!chart) return;
+        chart.data.datasets[0].borderColor = theme.panel;
+        chart.options.plugins.tooltip = tooltipOptions();
+        chart.update('none');
+    });
+    [trendChartInstance, dashboardTrendChartInstance].forEach(chart => {
+        if (!chart) return;
+        chart.data.datasets[0].borderColor = theme.success;
+        chart.data.datasets[1].borderColor = theme.danger;
+        chart.options.plugins.tooltip = tooltipOptions();
+        chart.update('none');
+    });
+    if (budgetChartInstance) {
+        budgetChartInstance.data.datasets[0].borderColor = theme.panel;
+        budgetChartInstance.options.plugins.tooltip = tooltipOptions();
+        budgetChartInstance.update('none');
+    }
     window.updateExpenseBreakdown?.(selectedExpenseCategory);
 }
 
@@ -498,4 +519,20 @@ window.__SF_CHART_STATE__ = () => ({
         dashboardTrend: Boolean(dashboardTrendChartInstance)
     }
 });
+
+function resizeChartsForTab(tabId) {
+    if (tabId === 'analytics') {
+        if (trendChartInstance) trendChartInstance.resize();
+        if (analyticsChartInstance) analyticsChartInstance.resize();
+    }
+    if (tabId === 'budgets') {
+        if (budgetChartInstance) budgetChartInstance.resize();
+    }
+    if (tabId === 'dashboard') {
+        if (expenseChartInstance) expenseChartInstance.resize();
+        if (dashboardTrendChartInstance) dashboardTrendChartInstance.resize();
+    }
+}
+window.resizeChartsForTab = resizeChartsForTab;
+
 document.documentElement.dataset.sfChartsReady = 'true';
